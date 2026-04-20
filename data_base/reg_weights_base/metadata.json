@@ -1,0 +1,64 @@
+{
+  "trained_at_utc": "2026-04-19T21:03:09+00:00",
+  "sources": {
+    "reference": "/home/bobbycaliber44/projects/py310_docker_check/data_base/data_base.csv",
+    "new_dir": "/home/bobbycaliber44/projects/py310_docker_check/data_new"
+  },
+  "rows_trained": 7200,
+  "features": [
+    "cpu_name",
+    "gpu_name",
+    "gpu_memory",
+    "used_gpu",
+    "ram_memory",
+    "model_name",
+    "num_all_params",
+    "model_img_size",
+    "image_batch_size",
+    "Frequency (MHz)",
+    "Max Frequency (MHz)",
+    "Cores",
+    "Threads",
+    "l1_cache_size (KB)",
+    "l1_instruction_cache_size (KB)",
+    "l2_cache_size_per_core (KB)",
+    "l2_cache_size (KB)",
+    "l3_cache_size (MB)",
+    "SMP Supported",
+    "Compute Capability (cuda version)",
+    "Number of SMs",
+    "Cores per SM",
+    "Total CUDA Cores",
+    "Number of Tensor Cores",
+    "Clock Rate (GHz) boost",
+    "FP32 FLOPS (TFLOPS)",
+    "FP16 FLOPS (TFLOPS)",
+    "FP64 FLOPS (GFLOPS)",
+    "pixels",
+    "work_estimate",
+    "cpu_throughput",
+    "compute_throughput",
+    "model_family"
+  ],
+  "categorical_features": [
+    "cpu_name",
+    "gpu_name",
+    "model_name",
+    "model_family"
+  ],
+  "target_log": "log_time",
+  "target_inverse_transform": "np.exp(prediction)",
+  "model_params": {
+    "iterations": 600,
+    "depth": 8,
+    "learning_rate": 0.05,
+    "random_seed": 42,
+    "verbose": 0
+  },
+  "cv": {
+    "folds": 5,
+    "n_groups": 5,
+    "cv_r2_log": 0.9073941353290131,
+    "cv_mae_sec": 0.7526929560354709
+  }
+}

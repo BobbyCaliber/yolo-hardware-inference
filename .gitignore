@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# IDE / editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Benchmark runtime artefacts (regenerated per run)
+tmp/
+catboost_info/
+
+# YOLO weight files that may leak outside tmp/weights/ (e.g. if the script
+# is run from a different CWD during dev)
+*.pt
+
+# Logs
+*.log
