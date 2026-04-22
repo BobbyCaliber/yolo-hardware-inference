@@ -26,19 +26,19 @@ def count_parameters(model):
 
 
 def get_random_images_from_folder(folder_path, num_images):
-    # Получаем список всех файлов в папке
+    # list every image file in the folder
     all_files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(('.jpg', '.png', '.jpeg'))]
 
-    # Проверяем, достаточно ли файлов для выборки
+    # make sure there are enough files to sample from
     if num_images > len(all_files):
-        raise ValueError(f"Запрошено {num_images} изображений, но в папке только {len(all_files)} доступных файлов.")
+        raise ValueError(f"Requested {num_images} images, but only {len(all_files)} files are available in the folder.")
 
-    # Выбираем случайные изображения
+    # pick a random subset
     selected_files = random.sample(all_files, num_images)
     return selected_files
 
 
-# константы
+# constants
 ram = int(np.round(psutil.virtual_memory().total / (1024. ** 3)))
 cpu = cpuinfo.get_cpu_info().get('brand_raw', 'Unknown')
 
@@ -53,7 +53,7 @@ else:
 
 devices = ['cpu']
 if torch.cuda.is_available():
-    devices.append('cuda') # в train device=cuda
+    devices.append('cuda')  # during training device=cuda
 
 # model_names7 yolov7 not supported in ultralytics
 model_names5 = ['yolov5nu.pt', 'yolov5su.pt', 'yolov5mu.pt', 'yolov5lu.pt']
@@ -85,13 +85,13 @@ with open(os.path.join(output_dir, 'yolo_predict.csv'), 'w', newline='', bufferi
              ]
     writer.writerow(field)
 
-    # определим константы
+    # constants for this run
     cpu_name = cpu
     gpu_name = gpu
     gpu_memory = gpu_mem
     ram_memory = ram
 
-    # варьируемые переменные
+    # variables swept across the benchmark
     for device in devices:
         if device == 'cpu':
             used_gpu = False

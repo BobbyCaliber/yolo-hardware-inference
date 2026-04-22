@@ -1,10 +1,10 @@
-"""Streamlit UI — тонкая обертка над Makefile.
+"""Streamlit UI — a thin wrapper around the Makefile.
 
-Запуск:
-    make ui         # или:  streamlit run src/streamlit_app.py
+Launch:
+    make ui         # or:  streamlit run src/streamlit_app.py
 
-Все операции (build/run/merge/train/predict/clean) вызываются через
-`make <target>` в subprocess — логи стримятся в браузер.
+Every action (build/run/merge/train/predict/clean) is dispatched as
+`make <target>` in a subprocess — logs are streamed into the browser.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def run_make(target: str, extra_env: dict[str, str] | None = None,
              log_height: int = 500) -> int:
     """Run `make <target> [K=V ...]`, stream stdout/stderr into the page.
 
-    Логи пишутся в scrollable-контейнер фиксированной высоты.
+    Logs are written into a fixed-height scrollable container.
     """
     env = os.environ.copy()
     if extra_env:
@@ -59,7 +59,7 @@ def run_make(target: str, extra_env: dict[str, str] | None = None,
         placeholder.code("\n".join(log_lines[-1000:]), language="bash")
     rc = proc.wait()
     if rc == 0:
-        st.success(f"`make {target}` — готово")
+        st.success(f"`make {target}` — done")
     else:
         st.error(f"`make {target}` — exit {rc}")
     return rc
@@ -106,12 +106,12 @@ st.set_page_config(page_title="YOLO Hardware Predict", page_icon="▶️", layou
 st.title("YOLO Hardware Predict")
 
 with st.sidebar:
-    st.header("Общие настройки")
-    only = st.multiselect("ONLY (бенчмарки) - выбрать определенные бенчмарки для запуска", ["cpu", "gpu", "yolo"],
-                          default=["cpu", "gpu", "yolo"])
-    skip_build = st.checkbox("SKIP_BUILD (переиспользовать docker images)", value=False)
+    st.header("Global settings")
+    only = st.multiselect("ONLY (benchmarks) — pick which benchmarks to run",
+                          ["cpu", "gpu", "yolo"], default=["cpu", "gpu", "yolo"])
+    skip_build = st.checkbox("SKIP_BUILD (reuse existing docker images)", value=False)
     log_level = st.selectbox("LOG_LEVEL", ["DEBUG", "INFO", "WARNING", "ERROR"], index=1)
-    merge_tag = st.text_input("MERGE_TAG (суффикс merged CSV)", value="")
+    merge_tag = st.text_input("MERGE_TAG (suffix for merged CSV)", value="")
 
     st.divider()
     st.caption(f"Project: `{PROJECT_ROOT}`")
@@ -132,10 +132,10 @@ tab_pipeline, tab_predict, tab_maintenance, tab_data = st.tabs(
 with tab_pipeline:
     st.subheader("Benchmark → Merge → Train")
     st.markdown(
-        "1. **Build** — соберет три docker-образа\n"
-        "2. **Run** — запустит бенчмарки (вкладка слева 'ONLY' - запускает только определенные бенчмарки)\n"
-        "3. **Merge** — склеит `tmp/data/*.csv` → `data_new/`\n"
-        "4. **Train** — обучит CatBoost на `data_base + data_new/*.csv`"
+        "1. **Build** — build the three docker images\n"
+        "2. **Run** — run the benchmarks (use the sidebar 'ONLY' widget to run a subset)\n"
+        "3. **Merge** — merge `tmp/data/*.csv` → `data_new/`\n"
+        "4. **Train** — train CatBoost on `data_base + data_new/*.csv`"
     )
 
     c1, c2, c3, c4 = st.columns(4)
@@ -154,7 +154,7 @@ with tab_pipeline:
 
 # ---------- Predict ---------------------------------------------------------
 with tab_predict:
-    st.subheader("Предсказать время инференса")
+    st.subheader("Predict inference time")
     cpu_names = load_cpu_names()
     gpu_names = load_gpu_names()
     models = load_models()
@@ -188,8 +188,8 @@ with tab_predict:
         run_make("predict", extra_env=extra_env)
 
     st.divider()
-    if st.button("Cписок моделей (make predict → --list-models)"):
-        # прямой вызов скрипта, т.к. в Makefile нет отдельной цели
+    if st.button("List models (predict → --list-models)"):
+        # direct script invocation — there's no dedicated Makefile target
         placeholder = st.container(height=400, border=True).empty()
         log: list[str] = []
         proc = subprocess.Popen(
@@ -204,32 +204,32 @@ with tab_predict:
 
 # ---------- Maintenance -----------------------------------------------------
 with tab_maintenance:
-    st.subheader("Очистка")
-    st.warning("`make clean` удалит `tmp/`, `data_new/` и все три benchmark docker-образа.")
-    confirm = st.checkbox("Я понимаю, что это необратимо")
+    st.subheader("Cleanup")
+    st.warning("`make clean` will remove `tmp/`, `data_new/` and all three benchmark docker images.")
+    confirm = st.checkbox("I understand this is irreversible")
     if st.button("Clean", disabled=not confirm):
         run_make("clean")
 
     st.divider()
     st.subheader("make help")
-    if st.button("Показать все команды"):
+    if st.button("Show all targets"):
         run_make("help")
 
 # ---------- Data preview ----------------------------------------------------
 with tab_data:
-    st.subheader("Обзор данных")
+    st.subheader("Data overview")
     if DATA_BASE.is_file():
         st.markdown(f"**`data_base/data_base.csv`** — {DATA_BASE.stat().st_size / 1024:.0f} KB")
         df_base = pd.read_csv(DATA_BASE)
         st.caption(f"{len(df_base):,} rows × {len(df_base.columns)} cols")
         st.dataframe(df_base.head(200), use_container_width=True, height=300)
     else:
-        st.info("`data_base/data_base.csv` не найден.")
+        st.info("`data_base/data_base.csv` not found.")
 
     data_new = PROJECT_ROOT / "data_new"
     if data_new.is_dir():
         csvs = sorted(data_new.glob("*.csv"))
         if csvs:
-            st.markdown("**`data_new/*.csv`** (свежие бенчмарки)")
+            st.markdown("**`data_new/*.csv`** (fresh benchmark runs)")
             for p in csvs:
                 st.markdown(f"- `{p.relative_to(PROJECT_ROOT)}` — {p.stat().st_size / 1024:.0f} KB")
