@@ -22,7 +22,7 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install build run merge run-and-merge train predict clean
+.PHONY: help install build run merge run-and-merge train predict clean ui
 
 help: ## show this help
 	@awk 'BEGIN {FS = ":.*## "; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} \
@@ -53,7 +53,7 @@ merge: ## merge the 3 CSVs in DATA_DIR into a 35-column file in DATA_NEW
 	$(PYTHON) $(SRC_DIR)/merge_results.py --data-dir $(DATA_DIR) --out-dir $(DATA_NEW) \
 	    $(if $(MERGE_TAG),--tag $(MERGE_TAG))
 
-run-and-merge: run merge ## full suite + merge into DATA_NEW
+run-merge-train: run merge train ## full benchmark + merge into DATA_NEW + train on DATA_NEW
 
 train: ## train CatBoost on data_base + data_new/*.csv, save to data_new/reg_weights_new/
 	$(PYTHON) $(SRC_DIR)/train_model.py
@@ -62,6 +62,9 @@ predict: ## predict: CPU=... GPU=... RAM=... MODEL=... IMG=... BATCH=... [USED_G
 	$(PYTHON) $(SRC_DIR)/predict.py --cpu "$(CPU)" --gpu "$(GPU)" --ram $(RAM) \
 	    --model $(MODEL) --img-size $(IMG) --batch $(BATCH) \
 	    $(if $(filter-out 0,$(USED_GPU)),--used-gpu)
+
+ui: ## launch Streamlit frontend (wraps these make targets)
+	$(PYTHON) -m streamlit run $(SRC_DIR)/streamlit_app.py
 
 clean: ## remove tmp/, data_new/ and benchmark docker images
 	rm -rf $(TMP_DIR) $(DATA_NEW)

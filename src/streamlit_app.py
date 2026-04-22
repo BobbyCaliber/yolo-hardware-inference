@@ -1,0 +1,235 @@
+"""Streamlit UI — тонкая обертка над Makefile.
+
+Запуск:
+    make ui         # или:  streamlit run src/streamlit_app.py
+
+Все операции (build/run/merge/train/predict/clean) вызываются через
+`make <target>` в subprocess — логи стримятся в браузер.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+import pandas as pd
+import streamlit as st
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SPECS_DIR = PROJECT_ROOT / "specs"
+DATA_BASE = PROJECT_ROOT / "data_base" / "data_base.csv"
+
+
+# ------------------------------------------------------------------ helpers
+
+def run_make(target: str, extra_env: dict[str, str] | None = None,
+             extra_args: list[str] | None = None,
+             log_height: int = 500) -> int:
+    """Run `make <target> [K=V ...]`, stream stdout/stderr into the page.
+
+    Логи пишутся в scrollable-контейнер фиксированной высоты.
+    """
+    env = os.environ.copy()
+    if extra_env:
+        env.update({k: str(v) for k, v in extra_env.items() if v is not None and v != ""})
+
+    cmd = ["make", target] + (extra_args or [])
+    st.caption("`" + " ".join(cmd) + "`")
+
+    log_box = st.container(height=log_height, border=True)
+    placeholder = log_box.empty()
+    log_lines: list[str] = []
+    proc = subprocess.Popen(
+        cmd,
+        cwd=PROJECT_ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        log_lines.append(_ANSI_RE.sub("", line.rstrip()))
+        placeholder.code("\n".join(log_lines[-1000:]), language="bash")
+    rc = proc.wait()
+    if rc == 0:
+        st.success(f"`make {target}` — готово")
+    else:
+        st.error(f"`make {target}` — exit {rc}")
+    return rc
+
+
+@st.cache_data(show_spinner=False)
+def load_cpu_names() -> list[str]:
+    names: list[str] = []
+    for path, col in [
+        (SPECS_DIR / "amd-cpus.csv", "Model"),
+        (SPECS_DIR / "intel-cpus.csv", "CpuName"),
+        (SPECS_DIR / "benchmark-cpus.csv", "CpuName"),
+    ]:
+        if path.is_file():
+            try:
+                df = pd.read_csv(path, low_memory=False, usecols=[col])
+                names.extend(df[col].dropna().astype(str).tolist())
+            except Exception:
+                pass
+    return sorted(set(names))
+
+
+@st.cache_data(show_spinner=False)
+def load_gpu_names() -> list[str]:
+    path = SPECS_DIR / "gpu_1986-2026.csv"
+    if not path.is_file():
+        return []
+    df = pd.read_csv(path, low_memory=False, usecols=["Brand", "Name"])
+    full = (df["Brand"].fillna("") + " " + df["Name"].fillna("")).str.strip()
+    return sorted(set(full[full.str.len() > 0].tolist()))
+
+
+@st.cache_data(show_spinner=False)
+def load_models() -> list[str]:
+    if not DATA_BASE.is_file():
+        return []
+    df = pd.read_csv(DATA_BASE, usecols=["model_name"])
+    return sorted(df["model_name"].dropna().astype(str).unique().tolist())
+
+
+# ------------------------------------------------------------------ layout
+
+st.set_page_config(page_title="YOLO Hardware Predict", page_icon="▶️", layout="wide")
+st.title("YOLO Hardware Predict")
+
+with st.sidebar:
+    st.header("Общие настройки")
+    only = st.multiselect("ONLY (бенчмарки) - выбрать определенные бенчмарки для запуска", ["cpu", "gpu", "yolo"],
+                          default=["cpu", "gpu", "yolo"])
+    skip_build = st.checkbox("SKIP_BUILD (переиспользовать docker images)", value=False)
+    log_level = st.selectbox("LOG_LEVEL", ["DEBUG", "INFO", "WARNING", "ERROR"], index=1)
+    merge_tag = st.text_input("MERGE_TAG (суффикс merged CSV)", value="")
+
+    st.divider()
+    st.caption(f"Project: `{PROJECT_ROOT}`")
+    st.caption(f"Python: `{sys.executable}`")
+
+common_env = {
+    "ONLY": ",".join(only) if only else "cpu,gpu,yolo",
+    "SKIP_BUILD": "1" if skip_build else "0",
+    "LOG_LEVEL": log_level,
+    "MERGE_TAG": merge_tag,
+}
+
+tab_pipeline, tab_predict, tab_maintenance, tab_data = st.tabs(
+    ["Pipeline", "Predict", "Maintenance", "Data"]
+)
+
+# ---------- Pipeline --------------------------------------------------------
+with tab_pipeline:
+    st.subheader("Benchmark → Merge → Train")
+    st.markdown(
+        "1. **Build** — соберет три docker-образа\n"
+        "2. **Run** — запустит бенчмарки (вкладка слева 'ONLY' - запускает только определенные бенчмарки)\n"
+        "3. **Merge** — склеит `tmp/data/*.csv` → `data_new/`\n"
+        "4. **Train** — обучит CatBoost на `data_base + data_new/*.csv`"
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    if c1.button("build", use_container_width=True):
+        run_make("build")
+    if c2.button("run", use_container_width=True):
+        run_make("run", extra_env=common_env)
+    if c3.button("merge", use_container_width=True):
+        run_make("merge", extra_env=common_env)
+    if c4.button("train", use_container_width=True):
+        run_make("train")
+
+    st.divider()
+    if st.button("run-merge-train (end-to-end)", type="primary", use_container_width=True):
+        run_make("run-merge-train", extra_env=common_env)
+
+# ---------- Predict ---------------------------------------------------------
+with tab_predict:
+    st.subheader("Предсказать время инференса")
+    cpu_names = load_cpu_names()
+    gpu_names = load_gpu_names()
+    models = load_models()
+
+    with st.form("predict_form"):
+        c1, c2 = st.columns(2)
+        with c1:
+            cpu = st.selectbox("CPU", cpu_names or [""], index=0 if cpu_names else None)
+            ram = st.number_input("RAM (GB)", min_value=1, max_value=2048, value=32)
+            model = st.selectbox("Model", models or ["yolov8m.pt"],
+                                 index=(models.index("yolov8m.pt") if "yolov8m.pt" in models else 0))
+        with c2:
+            gpu = st.selectbox("GPU", gpu_names or [""], index=0 if gpu_names else None)
+            used_gpu = st.checkbox("If Yolo inference on GPU", value=True)
+            img_size = st.number_input("Image size (px)", min_value=32, max_value=4096,
+                                        value=640, step=32)
+            batch = st.number_input("Batch size", min_value=1, max_value=256, value=5)
+
+        submitted = st.form_submit_button("predict", type="primary", use_container_width=True)
+
+    if submitted:
+        extra_env = {
+            "CPU": cpu,
+            "GPU": gpu,
+            "RAM": str(ram),
+            "MODEL": model,
+            "IMG": str(img_size),
+            "BATCH": str(batch),
+            "USED_GPU": "1" if used_gpu else "0",
+        }
+        run_make("predict", extra_env=extra_env)
+
+    st.divider()
+    if st.button("Cписок моделей (make predict → --list-models)"):
+        # прямой вызов скрипта, т.к. в Makefile нет отдельной цели
+        placeholder = st.container(height=400, border=True).empty()
+        log: list[str] = []
+        proc = subprocess.Popen(
+            [sys.executable, str(PROJECT_ROOT / "src" / "predict.py"), "--list-models"],
+            cwd=PROJECT_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            log.append(line.rstrip())
+            placeholder.code("\n".join(log), language="bash")
+        proc.wait()
+
+# ---------- Maintenance -----------------------------------------------------
+with tab_maintenance:
+    st.subheader("Очистка")
+    st.warning("`make clean` удалит `tmp/`, `data_new/` и все три benchmark docker-образа.")
+    confirm = st.checkbox("Я понимаю, что это необратимо")
+    if st.button("Clean", disabled=not confirm):
+        run_make("clean")
+
+    st.divider()
+    st.subheader("make help")
+    if st.button("Показать все команды"):
+        run_make("help")
+
+# ---------- Data preview ----------------------------------------------------
+with tab_data:
+    st.subheader("Обзор данных")
+    if DATA_BASE.is_file():
+        st.markdown(f"**`data_base/data_base.csv`** — {DATA_BASE.stat().st_size / 1024:.0f} KB")
+        df_base = pd.read_csv(DATA_BASE)
+        st.caption(f"{len(df_base):,} rows × {len(df_base.columns)} cols")
+        st.dataframe(df_base.head(200), use_container_width=True, height=300)
+    else:
+        st.info("`data_base/data_base.csv` не найден.")
+
+    data_new = PROJECT_ROOT / "data_new"
+    if data_new.is_dir():
+        csvs = sorted(data_new.glob("*.csv"))
+        if csvs:
+            st.markdown("**`data_new/*.csv`** (свежие бенчмарки)")
+            for p in csvs:
+                st.markdown(f"- `{p.relative_to(PROJECT_ROOT)}` — {p.stat().st_size / 1024:.0f} KB")
