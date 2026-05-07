@@ -1,287 +1,193 @@
 # yolo-hardware-predict
 
-**End-to-end pipeline for predicting YOLO inference time on arbitrary hardware.**
-Build and run three Docker containers to probe the host's CPU/GPU and benchmark
-inference across a matrix of YOLO variants × image sizes × batch sizes;
-merge the per-run CSVs into a training dataset; fit a CatBoost regressor;
-and use the trained model to predict inference time for unseen
-hardware/workload combinations.
+**Predict CV-model inference time on arbitrary hardware.**
+
+A trained CatBoost regressor that, given any `(cpu, gpu, model, image_size,
+batch)` tuple, returns expected inference time in seconds. The shipped
+baseline covers **5 hardware platforms × 24 YOLO models**; the model zoo
+itself spans **73 models across 21 architecture families** (YOLO v5–11,
+RT-DETR, DETR, Segformer, Faster/Mask/Keypoint-RCNN, DeepLabV3, FCN,
+LR-ASPP, ViT, DeiT, Swin, EfficientNet, ResNet/ResNeXt, ConvNeXt).
+Hardware features for unseen CPUs/GPUs come from shipped spec catalogues
+(~7800 CPUs, ~2900 GPUs); model features come from pre-computed
+architectural fingerprints (FLOPs, op-type histogram, attention/depthwise
+shares, roofline estimate). So you can predict for hardware that's never
+been benchmarked.
+
+If you want better-than-baseline accuracy on YOUR machine, run
+`make collect` to add real benchmarks for your platform and retrain.
+
+See `scalability_plan.md` for the methodology and
+`research/ablation_arch_features.md` for the ablation that validates
+arch features replace the per-model identity (R² 0.968 leave-one-family-out).
+Stage-4 RT-DETR gate (held-out family MAPE ≤ 40%) was confirmed at 23–27%
+across configurations once structural arch features were added.
 
 ## Requirements
 
-- **Docker Engine 24+** with the **NVIDIA Container Toolkit** for GPU benchmarks
-- **Python 3.10+** on the host (for `run_benchmark.py`, `merge_results.py`, `train_model.py`, `predict.py`)
-- **NVIDIA GPU** with CUDA 12.6-compatible drivers for `check_gpu_config` and `check_yolo_predict` (the CPU descriptor runs anywhere)
+- **Python 3.10+** for `predict.py`, `streamlit_app.py`, and the helper scripts
+- **Docker Engine 24+** with the **NVIDIA Container Toolkit** — only needed
+  if you want to bench on your own hardware (the shipped baseline weights
+  predict without it)
 
-## Quickstart
-You can use Web UI or Makefile in project root terminal
-### 1. Web UI (Streamlit)
-
-```bash
-make install          # installs streamlit alongside the other deps
-make ui               # launches the Streamlit frontend
-```
-
-- **Pipeline tab** — buttons for `build` / `run` / `merge` / `train` and a
-  combined `run-merge-train` end-to-end action.
-- **Predict tab** — form with CPU/GPU dropdowns auto-populated from
-  `specs/*.csv`, YOLO model list from `data_base.csv`, and inputs for RAM / image
-  size / batch / used-GPU flag.
-- **Maintenance tab** — Clean data and show makefile help.
-- **Data tab** — preview of base data and any freshly merged CSVs.
-- **Sidebar** — QOL flags `ONLY`, `SKIP_BUILD`, `LOG_LEVEL`, `MERGE_TAG`.
-
-### 2. Makefile
-The commands below take a cold repo to a trained predictor:
+## Quickstart — predict only
 
 ```bash
-make help                          # list make targets + current variable values
-make install                       # pip install requirements.txt
-make run                           # run 3 benchmark containers → tmp/data/*.csv
-make merge MERGE_TAG=$(hostname)   # → data_new/merged_<ts>_<host>.csv
-make train                         # train CatBoost on data_base + data_new → weights go to data_new/reg_weights_new/
-make predict CPU="AMD Ryzen 9 7900X" GPU="RTX 5060" RAM=32 MODEL=yolov8m.pt IMG=640 BATCH=5 USED_GPU=1 # example of making predictions on unseen hardware
+make install
+make ui                                  # browser UI; pick CPU/GPU/model and predict
+# or:
+make predict CPU="AMD Ryzen 9 7950X" GPU="NVIDIA GeForce RTX 4090" \
+    USED_GPU=1 RAM=64 MODEL=yolov8m.pt IMG=640 BATCH=5
 ```
 
-Expected final output:
+`predict` works for any CPU/GPU you can spell from the spec catalogues:
 
-```
-[INFO] weights: data_new/reg_weights_new/catboost_model.cbm  [data_new (fresh)]
-[INFO] CPU matched: AMD Ryzen™ 7 5700X  (source: amd-cpus.csv)
-       8c/16t  3400.0→4600.0 MHz  L2=4096.0KB  L3=32.0MB
-[INFO] GPU matched: NVIDIA GeForce RTX 3060 12 GB
-       28 SMs × 128 = 3584 cores, FP32 12.74 TFLOPS, CC 8.6
-
-predicted inference time: 0.0847 sec  (84.7 ms)  for yolov8m.pt @ 640px × batch 5 on GPU
+```bash
+python src/predict.py --list-platforms        # 5 baseline pairs (best accuracy)
+python src/predict.py --list-known-cpus       # ~7800 CPUs
+python src/predict.py --list-known-gpus       # ~2900 GPUs
+python src/predict.py --list-models           # registered model_names
 ```
 
-If `make train` has not been run, `make predict` transparently falls back
-to the baseline weights shipped in `data_base/reg_weights_base/` — so **you can run predictions with base data** without building and running containers.
+If both CPU and GPU are in the baseline (5 platforms), the prediction uses
+measured cache sizes etc. directly. Otherwise the regressor falls back on
+hardware features synthesised from spec CSVs — works but less accurate.
 
-## Before training - configure VM memory on Docker Desktop / WSL2 / macOS
+## Reproducing on a new platform — improve baseline accuracy
 
-Raise the VM memory cap before collecting training data.
-`check_yolo_predict.py` reads `psutil.virtual_memory()` from *inside*
-the container, not the global value of RAM.
+To add real benchmarks for YOUR hardware in **one command**:
 
-- **Windows + WSL2:** edit `%USERPROFILE%\.wslconfig` on the Windows host:
-   ```
-   [wsl2]
-   memory="full memory size"
-   swap=0
-   ```
-   then run `wsl --shutdown` (Docker will re-create the VM on next start).
- - **macOS / Windows Hyper-V:** Docker Desktop → Settings → Resources →
-   drag the Memory slider to the desired value → Apply & Restart.
- - **Native Linux:** no action needed — containers inherit host RAM
-   unless you pass `--memory=<N>` explicitly.
+```bash
+git clone …
+make collect                     # build → bench every family → merge → enrich → train
+# Default FAMILIES covers all 21 registered families (full zoo, ~1.5–2 h on
+# a single platform). Override e.g. FAMILIES=rtdetr,yolov8 to bench a subset.
+# After completion: prints "[collect] total elapsed: HH:MM:SS" with the
+# wall-clock time for the whole pipeline.
+```
 
-## Pipeline stages
+`make collect` runs three docker containers (`check_cpu_config`,
+`check_gpu_config`, `check_model_predict`) and chains the rest of the
+pipeline (merge → enrich → train). Output: a refreshed
+`data_new/reg_weights_new/catboost_model.cbm` that the predictor will
+prefer over the shipped baseline.
 
-### 1. Collect — benchmark the host
+The CPU/GPU containers detect everything they need from the host — no
+external bandwidth lookup required:
 
-Three containers write CSVs into `tmp/data/`:
-
-| Container | Output | Contents |
+| Container | Output | Auto-detects |
 |---|---|---|
-| `check_cpu_config` | `cpu_config.csv` | CPU model, freq, cores/threads, L1/L2/L3, SMP |
-| `check_gpu_config` | `gpu_config.csv` | GPU, compute capability, SMs, CUDA/tensor cores, FP32/FP16/FP64 TFLOPS |
-| `check_yolo_predict` | `yolo_predict.csv` | One row per inference run over YOLOv5/6/8/9/10/11 × imgsz × batch × device |
+| `check_cpu_config` | `cpu_config.csv` | name, freq, cores, cache, **memory bandwidth** (best-effort) |
+| `check_gpu_config` | `gpu_config.csv` | name, SMs, FLOPS, **memory bandwidth** (via pycuda mem-clock × bus-width) |
+| `check_model_predict` | `family_<name>_predict.csv` | per-row inference time across configured `(model, img_size, batch, device)` sweep |
 
-`merge_results.py` cross-joins them into a single file in `data_new/`, matching the exact schema of `data_base/data_base.csv`.
+If you only want one family or sweep, use `make bench-family`:
 
-### 2. Train — fit CatBoost
-
-`train_model.py` concatenates `data_base/data_base.csv` with every CSV in
-`data_new/`, applies the
-preprocessing pipeline, runs a cross-validation and
-fits a final CatBoost regressor on the full dataset.
-
-Model and metadata are
-saved to `data_new/reg_weights_new/`.
-
-### 3. Predict — ask the model
-
-`predict.py` resolves CPU/GPU specs from the `specs/*.csv` lookup tables,
-pulls the corresponding YOLO model param count from `data_base.csv`,
-applies the same preprocessing, and calls `CatBoostRegressor.predict()`.
-
-Defaults for freshly-trained weights (`data_new/reg_weights_new/`) if
-present, otherwise uses repo baseline weights(`data_base/reg_weights_base/`).
-
-
-## API reference
-
-### `run_benchmark.py` — container orchestration
-
-```python
-@dataclass(frozen=True)
-class Benchmark:
-    name: str                    # container name, e.g. "check_yolo_predict"
-    context: Path                # docker build context directory
-    image: str                   # image tag
-    needs_gpu: bool              # adds DeviceRequest(count=-1, capabilities=[["gpu"]])
-    needs_images: bool = False   # mounts --images-dir → /app/data/images (ro)
-    needs_weights: bool = False  # mounts --weights-dir → /app/weights (rw)
-
-BENCHMARKS: dict[str, Benchmark]  # registry keyed by "cpu"/"gpu"/"yolo"
+```bash
+make bench-family FAMILY=rtdetr IMG=320,640,800,1120 BATCH=1,4,8
+make merge                                   # join with cpu/gpu config
+make train                                   # retrain regressor
 ```
 
-**CLI flags:** `--data-dir`, `--images-dir`, `--weights-dir`, `--only`,
-`--skip-build`, `--pull`, `--log-level`. Handles `KeyboardInterrupt` by
-forwarding `SIGINT` into the container so the Python `with open(...)`
-blocks can flush CSV buffers before exit.
+By default each family registers 6 input sizes × 5 batch sizes × CPU+GPU =
+**60 measurements per model**, matching the YOLO baseline coverage.
+Classification families sweep 160–512 px, detection/segmentation sweep
+320–1120 px (per-spec, see `default_img_sizes` in each runner).
 
-### `merge_results.py` — schema-aligned CSV join
+### Adding a new model family
 
-```python
-def merge(data_dir: Path) -> pandas.DataFrame
+1. Register the model in `src/runners/<family>_runner.py` (one
+   `ModelSpec(...)` line — see existing runners for examples). Set
+   `arch_ref_img_size` to the model's native size (used only for
+   FLOPs/activation profiling — it does not constrain bench sizes).
+2. Pre-compute its arch features (one-time, platform-agnostic). The host
+   doesn't need timm/transformers installed — `arch-features-docker`
+   profiles inside the bench container:
+   ```bash
+   make arch-features-docker FAMILY=segformer
+   ```
+3. Bench it on each target platform:
+   ```bash
+   make bench-family FAMILY=segformer SKIP_BUILD=1
+   make merge && make train
+   ```
+
+## Pipeline at a glance
+
+```
+                ┌──────────────────────────┐
+                │   check_cpu_config       │ ─── cpu_config.csv (host CPU + bandwidth)
+                ├──────────────────────────┤
+   make collect │   check_gpu_config       │ ─── gpu_config.csv (host GPU + bandwidth)
+                ├──────────────────────────┤
+                │   check_model_predict    │ ─── family_<n>_predict.csv (one row per inference)
+                └──────────────────────────┘
+                              │
+                       merge_results.py
+                              │
+                              ▼
+                    data_new/merged_*.csv   ──┐
+                                              │
+                    data_base/data_base.csv ──┤   ──> train_model.py ──> data_new/reg_weights_new/
+                                              │       (preprocess + enrich_helpers
+                    model_arch_features.csv ──┘        to add arch + structural-share +
+                                                       roofline features)
 ```
 
-Reads `cpu_config.csv`, `gpu_config.csv`, `yolo_predict.csv` from
-`data_dir`, cross-joins via `DataFrame.join(…, how="cross")`, and reorders
-columns to match `data_base/data_base.csv`.
-
-
-**CLI flags:** `--data-dir`, `--out-dir`, `--tag` (suffix for filename).
-One invocation → one timestamped file; no accumulation.
-
-### `train_model.py` — regression fit
-
-```python
-def load_all_csvs(ref_path: Path, new_dir: Path) -> pandas.DataFrame
-def preprocess(raw: pandas.DataFrame) -> pandas.DataFrame
-def cv_score(df: pandas.DataFrame) -> dict[str, float] | None
-def fit_final(df: pandas.DataFrame) -> tuple[CatBoostRegressor, list[str]]
-def save(model: CatBoostRegressor,
-         features: list[str],
-         report: TrainReport,
-         out_dir: Path, ref_csv: Path, new_dir: Path) -> None
-
-MODEL_PARAMS = dict(iterations=600, depth=8,
-                    learning_rate=0.05, random_seed=42, verbose=0)
-CATEGORICAL = ['cpu_name', 'gpu_name', 'model_name', 'model_family']
-```
-
-`preprocess()` steps, in order:
-1. Drop: `model_param_dict`, `Processor`, `GPU Name`, `FP64 TENSOR FLOPS`, `BF16 FLOPS`, `TF32 FLOPS`.
-2. Coerce `l1_*` / `l2_*` / `l3_cache_size` to numeric (`"Unknown"` → NaN).
-3. Parse `Compute Capability` tuple-repr `"(8, 6)"` → `8.6` float.
-4. Cast `used_gpu` → int.
-5. Derive `pixels`, `work_estimate`, `cpu_throughput`, `compute_throughput`.
-6. Log-transform target → `log_time = log(predicting_times)`.
-7. Extract `model_family` from `model_name`.
-
-### `predict.py` — inference-time estimation
-
-```python
-def resolve_cpu(cpu_name: str) -> dict[str, Any]
-def resolve_gpu(gpu_name: str) -> dict[str, Any]
-def load_model_param_lookup() -> dict[str, int]
-def build_row(cpu: dict, gpu: dict, *,
-              used_gpu: int, ram: int,
-              model_name: str, img_size: int, batch: int,
-              model_params: dict[str, int]) -> pandas.DataFrame
-def predict(row_df: pandas.DataFrame,
-            weights_path: Path, meta_path: Path) -> float
-
-BASE_WEIGHTS: Path   # data_base/reg_weights_base/catboost_model.cbm
-NEW_WEIGHTS:  Path   # data_new/reg_weights_new/catboost_model.cbm
-
-def _default_weights() -> Path  # NEW if exists else BASE
-```
-
-**`resolve_cpu(cpu_name)`** — dispatches by vendor token in `cpu_name`.
-
-**`resolve_gpu(gpu_name)`** — dispatches by vendor token in `gpu_name`.
-
-**`build_row()`** — constructs a single-row DataFrame with exactly the
-columns `preprocess()` expects.
-
-**`predict(row_df, weights_path, meta_path) -> float`** — returns
-inference time in **seconds**. Raises `SystemExit` if weights
-or metadata files are missing.
-
-**Caveats:**
-- Predictions below ~0.02s or above ~100s are likely extrapolation errors
-  — the training target ranged 0.015s … 127.5s but long-tail regions have
-  sparse coverage.
-- The `num_all_params` lookup requires `model_name` to have appeared in
-  `data_base.csv` at least once. Use `python src/predict.py --list-models`
-  to see the 24 supported YOLO weights.
-
-**CLI flags:** `--cpu` / `--gpu` / `--used-gpu` / `--ram` / `--model` /
-`--img-size` / `--batch` / `--weights` / `--meta` / `--list-models`.
-
-### `streamlit_app.py` — browser frontend
-
-Thin Streamlit wrapper around the Makefile. Has no project logic of its own:
-every action shells out to `make <target>` and streams the combined
-stdout/stderr into a scrollable log container.
-
-```python
-def run_make(target: str,
-             extra_env: dict[str, str] | None = None,
-             extra_args: list[str] | None = None,
-             log_height: int = 500) -> int
-
-@st.cache_data
-def load_cpu_names() -> list[str]   # merges specs/amd-cpus.csv + intel-cpus.csv + benchmark-cpus.csv
-@st.cache_data
-def load_gpu_names() -> list[str]   # "{Brand} {Name}" from specs/gpu_1986-2026.csv
-@st.cache_data
-def load_models()    -> list[str]   # unique model_name values from data_base.csv
-```
-
-**Execution.** `run_make()` launches `make <target>` via
-`subprocess.Popen` with `stderr` merged into `stdout`, then iterates over
-`proc.stdout` line-by-line and appends the last 1000 lines into an
-`st.container(height=log_height, border=True)` via `.code(..., language="bash")`.
-The loop is synchronous — while a job runs, the Streamlit script thread is
-blocked, so new button clicks on the page are queued until the current
-target exits.
-
-**Environment bridge.** Sidebar widgets are forwarded as env vars that the
-Makefile picks up: `ONLY`, `SKIP_BUILD`, `LOG_LEVEL`, `MERGE_TAG`. The
-Predict form additionally sets `CPU`, `GPU`, `RAM`, `MODEL`, `IMG`, `BATCH`,
-`USED_GPU` for the `predict` target. The `--list-models` button in the
-Predict tab bypasses `make` and invokes `predict.py --list-models` directly.
+`predict.py` then loads those weights, looks up host features
+(baseline first, spec catalogues second), looks up model arch features,
+re-derives the same enrichment, and calls `CatBoostRegressor.predict()`.
 
 ## Repository layout
 
 ```
 .
 ├── src/
-│   ├── check_cpu_config/            # CPU descriptor (Docker, ubuntu:22.04)
-│   ├── check_gpu_config/            # GPU descriptor (Docker, pycuda on cuda:12.6)
-│   ├── check_yolo_predict/          # YOLO inference benchmark (Docker, cuda:12.6)
-│   ├── run_benchmark.py             # orchestrates the 3 containers via Docker SDK
-│   ├── merge_results.py             # cross-joins tmp/data/*.csv → data_new/
-│   ├── train_model.py               # trains CatBoost on data_base + data_new
-│   ├── predict.py                   # predicts inference time for new hardware
-│   └── streamlit_app.py             # Streamlit UI — wraps the Makefile
-├── specs/
-│   ├── amd-cpus.csv                 # AMD cpu specs database
-│   ├── intel-cpus.csv               # Intel cpu specs database
-│   ├── benchmark-cpus.csv           # All cpu specs database
-│   └── gpu_1986-2026.csv            # gpu specs database
-├── data_base/                       # baseline prediction weights/db
-│   ├── data_base.csv                # 35-column dataset (7200 benchmark rows)
+│   ├── check_cpu_config/            # CPU descriptor + memory bandwidth
+│   ├── check_gpu_config/            # GPU descriptor + memory bandwidth
+│   ├── check_model_predict/         # generic model benchmark (uses runners/)
+│   ├── runners/                     # ModelRunner abstractions per framework
+│   │   ├── base.py / registry.py
+│   │   ├── yolo.py / rt_detr.py
+│   │   └── timm_runner.py / torchvision_runner.py / hf_runner.py
+│   ├── enrich_helpers.py            # arch features + roofline (shared)
+│   ├── hardware_lookup.py           # CPU/GPU exact-name lookup from specs/
+│   ├── run_benchmark.py             # docker SDK orchestrator
+│   ├── merge_results.py             # cross-join tmp/data/*.csv
+│   ├── train_model.py               # CatBoost trainer
+│   ├── predict.py                   # CLI predictor
+│   └── streamlit_app.py             # browser UI
+├── scripts/
+│   ├── compute_arch_features.py     # profile any registered model → arch features
+│   ├── enrich_dataset.py            # apply enrich_helpers to a CSV
+│   └── run_ablation.py              # Stage-2 feature-set ablation
+├── specs/                           # CPU / GPU spec catalogues
+│   ├── amd-cpus.csv / intel-cpus.csv / benchmark-cpus.csv
+│   └── gpu_1986-2026.csv
+├── data_base/                       # shipped baseline
+│   ├── data_base.csv                # 7200 measurements (5 platforms × 24 YOLO × sweep)
+│   ├── model_arch_features.csv      # 73 models × arch features (FLOPs, op-type
+│   │                                #   histogram, attention/depthwise shares, …)
 │   └── reg_weights_base/            # baseline CatBoost weights
-│       ├── catboost_model.cbm
-│       └── metadata.json
-├── data_new/                        # produced by `make merge` / `make train`
-│   └── reg_weights_new/             # fresh weights after `make train`
-├── tmp/                             # temp cache folder/unmerged benchmark data
-│   ├── data/                        # per-run raw CSVs
-│   └── weights/                     # YOLO .pt cache
-├── research/                        # Jupyter notebooks (model selection, EDA)
+├── data_new/                        # produced by make merge / make train
+├── research/
+│   └── ablation_arch_features.md    # Stage-2 results
 ├── Makefile
-├── requirements.txt                 # docker SDK + pandas + sklearn + catboost
-└── README.md
+└── requirements.txt
 ```
+
+## VM memory note (Docker Desktop / WSL2)
+
+The benchmark containers read `psutil.virtual_memory()` from inside the VM,
+not the host. If you're on Docker Desktop or WSL2, raise the VM cap before
+running `make collect`:
+
+- **Windows + WSL2:** `%USERPROFILE%\.wslconfig` → `[wsl2]\nmemory="<N>GB"`
+  → `wsl --shutdown`.
+- **macOS / Hyper-V:** Docker Desktop → Settings → Resources → Memory slider.
+- **Native Linux:** containers inherit host RAM; nothing to change.
 
 ## External data sources
 
-- GPU database source: <https://www.kaggle.com/datasets/ellimaaac/gpus-specs-from-1986-to-2026>
-- CPU database source: <https://github.com/felixsteinke/cpu-spec-dataset>
+- GPU specs: <https://www.kaggle.com/datasets/ellimaaac/gpus-specs-from-1986-to-2026>
+- CPU specs: <https://github.com/felixsteinke/cpu-spec-dataset>

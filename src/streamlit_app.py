@@ -23,6 +23,7 @@ import streamlit as st
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SPECS_DIR = PROJECT_ROOT / "specs"
 DATA_BASE = PROJECT_ROOT / "data_base" / "data_base.csv"
+ARCH_CSV = PROJECT_ROOT / "data_base" / "model_arch_features.csv"
 
 
 # ------------------------------------------------------------------ helpers
@@ -94,10 +95,23 @@ def load_gpu_names() -> list[str]:
 
 @st.cache_data(show_spinner=False)
 def load_models() -> list[str]:
+    """All registered models — pulled from model_arch_features.csv (every model
+    we have arch features for is predictable, regardless of whether it's in
+    the measured baseline)."""
+    if ARCH_CSV.is_file():
+        return sorted(pd.read_csv(ARCH_CSV)["model_name"].dropna().astype(str).unique().tolist())
+    if DATA_BASE.is_file():
+        return sorted(pd.read_csv(DATA_BASE, usecols=["model_name"])["model_name"]
+                      .dropna().astype(str).unique().tolist())
+    return []
+
+
+@st.cache_data(show_spinner=False)
+def load_baseline_platforms() -> pd.DataFrame:
     if not DATA_BASE.is_file():
-        return []
-    df = pd.read_csv(DATA_BASE, usecols=["model_name"])
-    return sorted(df["model_name"].dropna().astype(str).unique().tolist())
+        return pd.DataFrame(columns=["cpu_name", "gpu_name"])
+    df = pd.read_csv(DATA_BASE, usecols=["cpu_name", "gpu_name"], low_memory=False)
+    return df.drop_duplicates().reset_index(drop=True)
 
 
 # ------------------------------------------------------------------ layout
@@ -108,7 +122,7 @@ st.title("YOLO Hardware Predict")
 with st.sidebar:
     st.header("Global settings")
     only = st.multiselect("ONLY (benchmarks) — pick which benchmarks to run",
-                          ["cpu", "gpu", "yolo"], default=["cpu", "gpu", "yolo"])
+                          ["cpu", "gpu", "model"], default=["cpu", "gpu", "model"])
     skip_build = st.checkbox("SKIP_BUILD (reuse existing docker images)", value=False)
     log_level = st.selectbox("LOG_LEVEL", ["DEBUG", "INFO", "WARNING", "ERROR"], index=1)
     merge_tag = st.text_input("MERGE_TAG (suffix for merged CSV)", value="")
@@ -118,7 +132,7 @@ with st.sidebar:
     st.caption(f"Python: `{sys.executable}`")
 
 common_env = {
-    "ONLY": ",".join(only) if only else "cpu,gpu,yolo",
+    "ONLY": ",".join(only) if only else "cpu,gpu,model",
     "SKIP_BUILD": "1" if skip_build else "0",
     "LOG_LEVEL": log_level,
     "MERGE_TAG": merge_tag,
@@ -149,12 +163,20 @@ with tab_pipeline:
         run_make("train")
 
     st.divider()
-    if st.button("run-merge-train (end-to-end)", type="primary", use_container_width=True):
-        run_make("run-merge-train", extra_env=common_env)
+    st.caption("Or do everything in one shot — runs `make collect` (build → bench → merge → enrich → train).")
+    if st.button("collect (end-to-end on this host)", type="primary", use_container_width=True):
+        run_make("collect", extra_env=common_env)
 
 # ---------- Predict ---------------------------------------------------------
 with tab_predict:
     st.subheader("Predict inference time")
+    st.caption(
+        "CPU/GPU dropdowns cover the full spec catalogues "
+        "(~7800 CPUs, ~2900 GPUs). Hardware features come from "
+        "the baseline if the pair is among the 5 already-benchmarked "
+        "platforms; otherwise from `specs/*.csv`. Model dropdown lists every "
+        "model with cached arch features."
+    )
     cpu_names = load_cpu_names()
     gpu_names = load_gpu_names()
     models = load_models()
@@ -205,7 +227,7 @@ with tab_predict:
 # ---------- Maintenance -----------------------------------------------------
 with tab_maintenance:
     st.subheader("Cleanup")
-    st.warning("`make clean` will remove `tmp/`, `data_new/` and all three benchmark docker images.")
+    st.warning("`make clean` will remove `tmp/`, `data_new/` and the benchmark docker images.")
     confirm = st.checkbox("I understand this is irreversible")
     if st.button("Clean", disabled=not confirm):
         run_make("clean")

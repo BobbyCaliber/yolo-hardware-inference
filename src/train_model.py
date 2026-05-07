@@ -42,7 +42,11 @@ LOG = logging.getLogger("train_model")
 
 SRC_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SRC_DIR.parent
+sys.path.insert(0, str(SRC_DIR))
+import enrich_helpers  # noqa: E402
+
 DEFAULT_REF = PROJECT_ROOT / "data_base" / "data_base.csv"
+DEFAULT_ARCH = PROJECT_ROOT / "data_base" / "model_arch_features.csv"
 DEFAULT_NEW_DIR = PROJECT_ROOT / "data_new"
 DEFAULT_OUT = DEFAULT_NEW_DIR / "reg_weights_new"
 
@@ -64,7 +68,7 @@ CACHE_COLS = [
 ]
 TARGET_RAW = "predicting_times"
 TARGET_LOG = "log_time"
-MODEL_PARAMS = dict(iterations=600, depth=8, learning_rate=0.05, random_seed=42, verbose=0)
+MODEL_PARAMS = dict(iterations=600, depth=6, learning_rate=0.05, l2_leaf_reg=10, random_seed=42, verbose=0)
 
 
 @dataclass
@@ -95,12 +99,16 @@ def load_all_csvs(ref_path: Path, new_dir: Path) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def preprocess(raw: pd.DataFrame) -> pd.DataFrame:
+def preprocess(raw: pd.DataFrame, arch_csv: Path = DEFAULT_ARCH) -> pd.DataFrame:
     df = raw.drop(columns=[c for c in DROP_COLS if c in raw.columns]).copy()
     for c in CACHE_COLS:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    df['Compute Capability (cuda version)'] = df['Compute Capability (cuda version)'].str.replace(',', '.').str[1:-1].str.replace(' ', '').astype(float)
+    if df["Compute Capability (cuda version)"].dtype == object:
+        df['Compute Capability (cuda version)'] = (
+            df['Compute Capability (cuda version)']
+            .str.replace(',', '.').str[1:-1].str.replace(' ', '').astype(float)
+        )
     df["used_gpu"] = df["used_gpu"].astype(int)
     df["pixels"] = df["model_img_size"] ** 2 * df["image_batch_size"]
     df["work_estimate"] = df["num_all_params"] * df["pixels"]
@@ -111,7 +119,10 @@ def preprocess(raw: pd.DataFrame) -> pd.DataFrame:
         df["cpu_throughput"],
     )
     df[TARGET_LOG] = np.log(df[TARGET_RAW])
-    df["model_family"] = df["model_name"].str.extract(r"^(yolo\w*?\d+)")[0]
+    # Architectural features + roofline `t_theoretical` come from enrich_helpers;
+    # this is what made variant D in the Stage-2 ablation outperform the baseline
+    # by a wide margin (R² 0.968 vs 0.907, leave-one-family-out).
+    df = enrich_helpers.enrich(df, arch_csv=arch_csv)
     return df
 
 

@@ -12,6 +12,13 @@ num_sms = device.get_attribute(cuda.device_attribute.MULTIPROCESSOR_COUNT)
 clock_rate_ghz = device.get_attribute(cuda.device_attribute.CLOCK_RATE) / 1e6
 compute_capability = device.compute_capability()
 
+# Memory bandwidth straight from the device — no external lookup needed.
+# pycuda reports MEMORY_CLOCK_RATE in kHz at the *effective* GDDR rate
+# (e.g. 15000000 kHz for 15 Gbps GDDR6). bandwidth_GBps = effective_rate × bus / 8.
+mem_clock_khz = device.get_attribute(cuda.device_attribute.MEMORY_CLOCK_RATE)
+bus_width_bits = device.get_attribute(cuda.device_attribute.GLOBAL_MEMORY_BUS_WIDTH)
+gpu_peak_bw_gbps = (mem_clock_khz / 1e6) * bus_width_bits / 8
+
 # Per-arch defaults. Ratios are expressed relative to FP32 CUDA-core FMA
 # throughput (the "base" FP32 TFLOPS computed below). Sources: NVIDIA
 # arch whitepapers and TechPowerUp/GPU-Z flagship specs.
@@ -94,6 +101,10 @@ config = {
     'BF16 FLOPS (TFLOPS)': bf16_flops,
     'FP64 FLOPS (GFLOPS)': fp64_flops * 1000,
     'FP64 TENSOR FLOPS (TFLOPS)': fp64_tensor_flops,
+    'gpu_peak_bw_gbps': gpu_peak_bw_gbps,
+    # Coarse but stable proxy for kernel-launch overhead. Refine per-arch
+    # later if Stage-2 ablation calls for it.
+    'launch_overhead_us_gpu': 12.0,
 }
 
 output_dir = os.environ.get('DATA_DIR', '/app/data')

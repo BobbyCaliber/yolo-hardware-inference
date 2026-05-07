@@ -39,6 +39,7 @@ class Benchmark:
     needs_gpu: bool
     needs_images: bool = False
     needs_weights: bool = False
+    dockerfile: str | None = None  # path relative to `context`; None ⇒ default ./Dockerfile
 
 
 BENCHMARKS: dict[str, Benchmark] = {
@@ -54,10 +55,12 @@ BENCHMARKS: dict[str, Benchmark] = {
         image="yolo-benchmark/check_gpu_config:latest",
         needs_gpu=True,
     ),
-    "yolo": Benchmark(
-        name="check_yolo_predict",
-        context=SRC_DIR / "check_yolo_predict",
-        image="yolo-benchmark/check_yolo_predict:latest",
+    # generic runner — context is src/ so the runners/ package is in scope
+    "model": Benchmark(
+        name="check_model_predict",
+        context=SRC_DIR,
+        dockerfile="check_model_predict/Dockerfile",
+        image="yolo-benchmark/check_model_predict:latest",
         needs_gpu=True,
         needs_images=True,
         needs_weights=True,
@@ -78,13 +81,16 @@ def _client() -> docker.DockerClient:
 def _build(client: docker.DockerClient, bench: Benchmark, pull: bool = False) -> None:
     LOG.info("building %s from %s", bench.image, bench.context)
     error: str | None = None
-    for chunk in client.api.build(
+    build_kwargs = dict(
         path=str(bench.context),
         tag=bench.image,
         rm=True,
         pull=pull,
         decode=True,
-    ):
+    )
+    if bench.dockerfile:
+        build_kwargs["dockerfile"] = bench.dockerfile
+    for chunk in client.api.build(**build_kwargs):
         if "stream" in chunk:
             sys.stdout.write(chunk["stream"])
             sys.stdout.flush()
@@ -102,6 +108,7 @@ def _run(
     data_dir: Path,
     images_dir: Path,
     weights_dir: Path,
+    env: dict[str, str] | None = None,
 ) -> None:
     volumes = {str(data_dir): {"bind": "/app/data", "mode": "rw"}}
     if bench.needs_images:
@@ -113,13 +120,14 @@ def _run(
     if bench.needs_gpu:
         device_requests = [DeviceRequest(count=-1, capabilities=[["gpu"]])]
 
-    LOG.info("running %s", bench.name)
+    LOG.info("running %s%s", bench.name, f" with env {env}" if env else "")
     try:
         container = client.containers.run(
             image=bench.image,
             name=bench.name,
             volumes=volumes,
             device_requests=device_requests,
+            environment=env or {},
             detach=True,
             remove=False,
         )
@@ -181,7 +189,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--only",
-        default="cpu,gpu,yolo",
+        default="cpu,gpu,model",
         help="comma-separated subset of benchmarks to run.",
     )
     parser.add_argument(
@@ -200,7 +208,26 @@ def _parse_args() -> argparse.Namespace:
         default="INFO",
         help="logging level (DEBUG, INFO, WARNING).",
     )
+    parser.add_argument(
+        "--env",
+        action="append",
+        default=[],
+        metavar="KEY=VAL",
+        help="environment variable to pass to every benchmark container "
+             "(repeatable). Useful for the 'model' benchmark — e.g. "
+             "--env RUNNER_FAMILY=rtdetr --env IMG_SIZES=640,800",
+    )
     return parser.parse_args()
+
+
+def _parse_env(items: list[str]) -> dict[str, str]:
+    out = {}
+    for raw in items:
+        if "=" not in raw:
+            raise SystemExit(f"--env value must be KEY=VAL, got {raw!r}")
+        k, v = raw.split("=", 1)
+        out[k] = v
+    return out
 
 
 def main() -> None:
@@ -218,16 +245,17 @@ def main() -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     weights_dir.mkdir(parents=True, exist_ok=True)
 
-    if "yolo" in selected and not images_dir.is_dir():
+    if "model" in selected and not images_dir.is_dir():
         raise SystemExit(f"images dir not found: {images_dir}")
 
     client = _client()
+    env = _parse_env(args.env)
 
     for name in selected:
         bench = BENCHMARKS[name]
         if not args.skip_build:
             _build(client, bench, pull=args.pull)
-        _run(client, bench, data_dir, images_dir, weights_dir)
+        _run(client, bench, data_dir, images_dir, weights_dir, env=env)
 
     LOG.info("all benchmarks finished; results in %s", data_dir)
 
