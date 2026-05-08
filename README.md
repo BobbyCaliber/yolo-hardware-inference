@@ -55,6 +55,66 @@ hardware features synthesised from spec CSVs — works but less accurate.
 
 ## Reproducing on a new platform — improve baseline accuracy
 
+**Prerequisites:**
+
+- Make sure Docker Engine 24+ is installed and the daemon is running (`docker info`
+  succeeds). On Linux, your user is in the `docker` group; on Windows/macOS,
+  Docker Desktop is open.
+- The **NVIDIA Container Toolkit** must also be set up if you want GPU
+  benchmarks — see install instructions below. Verify with:
+  ```bash
+  docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
+  ```
+  (a CUDA image alone is not enough — the toolkit is what exposes the host
+  driver and `/dev/nvidia*` to the container).
+- A clean Python 3.10+ virtual environment for the host-side scripts
+  (orchestrator, merge, train, predict). Avoid installing into the system
+  interpreter:
+  ```bash
+  python3 -m venv .venv
+  source .venv/bin/activate          # Windows: .venv\Scripts\activate
+  make install                       # pip install -r requirements.txt
+  ```
+
+#### Installing the NVIDIA Container Toolkit
+
+Pre-requisite: a working NVIDIA driver on the host (`nvidia-smi` runs and
+shows your GPU). The toolkit only bridges the existing driver into Docker —
+it does not install one.
+
+**Ubuntu / Debian (and WSL2 Ubuntu):**
+
+```bash
+# 1. Add NVIDIA's package repo
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+    | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+    | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+    | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+# 2. Install
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+
+# 3. Wire it into the docker daemon and restart
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+```
+
+**Windows + WSL2:** install the **Windows** NVIDIA driver normally (it
+exposes the GPU into WSL automatically — do **not** install a Linux
+NVIDIA driver inside WSL). Then open your WSL distro and run the
+Ubuntu/Debian steps above. Docker Desktop with the WSL2 backend will pick
+up the toolkit from the distro.
+
+**macOS:** GPU benchmarks are not supported (no NVIDIA GPU passthrough on
+macOS). `make collect` will still work but will only produce CPU rows —
+your model coverage on GPU will rely on the shipped baseline.
+
+After install, the verification command above `docker run --gpus all … nvidia-smi` should print your GPU. If it errors with `could not select device driver "" with capabilities: gpu`, the toolkit is not wired
+into the docker daemon yet — re-run the `nvidia-ctk runtime configure`
+step and restart Docker.
+
 To add real benchmarks for YOUR hardware in **one command**:
 
 ```bash
