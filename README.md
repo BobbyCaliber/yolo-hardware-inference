@@ -1,27 +1,27 @@
 # yolo-hardware-predict
 
-**Predict CV-model inference time on arbitrary hardware.**
+**Predict CV-model inference time on arbitrary hardware — and find the
+cheapest PC that meets your latency target.**
 
 A trained CatBoost regressor that, given any `(cpu, gpu, model, image_size,
-batch)` tuple, returns expected inference time in seconds. The shipped
-baseline covers **5 hardware platforms × 24 YOLO models**; the model zoo
-itself spans **73 models across 21 architecture families** (YOLO v5–11,
-RT-DETR, DETR, Segformer, Faster/Mask/Keypoint-RCNN, DeepLabV3, FCN,
-LR-ASPP, ViT, DeiT, Swin, EfficientNet, ResNet/ResNeXt, ConvNeXt).
-Hardware features for unseen CPUs/GPUs come from shipped spec catalogues
-(~7800 CPUs, ~2900 GPUs); model features come from pre-computed
-architectural fingerprints (FLOPs, op-type histogram, attention/depthwise
-shares, roofline estimate). So you can predict for hardware that's never
-been benchmarked.
+batch)` tuple, returns expected inference time in seconds **with an
+uncertainty band**. The shipped baseline covers **5 hardware platforms ×
+24 YOLO models**; the model zoo itself spans **73 models across 21
+architecture families** (YOLO v5–11, RT-DETR, DETR, Segformer,
+Faster/Mask/Keypoint-RCNN, DeepLabV3, FCN, LR-ASPP, ViT, DeiT, Swin,
+EfficientNet, ResNet/ResNeXt, ConvNeXt). Hardware features for unseen
+CPUs/GPUs come from shipped spec catalogues (~7800 CPUs, ~2900 GPUs);
+model features come from pre-computed architectural fingerprints (FLOPs,
+op-type histogram, attention/depthwise shares, roofline estimate). So you
+can predict for hardware that's never been benchmarked.
 
-If you want better-than-baseline accuracy on YOUR machine, run
-`make collect` to add real benchmarks for your platform and retrain.
+The regressor is trained with CatBoost's `RMSEWithUncertainty` loss, so
+every prediction comes with a `(t_lo, t_pred, t_hi)` band — wider for
+hardware far from the training distribution, narrower for the platforms
+we've actually benched. `make recommend` uses the band to walk a 1500-PC
+catalogue scraped from dns-shop.ru and surface the cheapest build whose
+**upper** latency bound still fits your target.
 
-See `scalability_plan.md` for the methodology and
-`research/ablation_arch_features.md` for the ablation that validates
-arch features replace the per-model identity (R² 0.968 leave-one-family-out).
-Stage-4 RT-DETR gate (held-out family MAPE ≤ 40%) was confirmed at 23–27%
-across configurations once structural arch features were added.
 
 ## Requirements
 
@@ -40,6 +40,19 @@ make predict CPU="AMD Ryzen 9 7950X" GPU="NVIDIA GeForce RTX 4090" \
     USED_GPU=1 RAM=64 MODEL=yolov8m.pt IMG=640 BATCH=5
 ```
 
+`predict` returns the central estimate together with a ~84% confidence
+band:
+
+```
+predicted inference time: 0.0452 sec  (45.2 ms)  [32.2 – 63.6 ms ~84% band]
+    for yolov8m.pt @ 640px × batch 1 on GPU
+```
+
+The band is `exp(μ ± σ_total)` in log-seconds, where `σ_total` combines
+**epistemic** uncertainty (model's confidence about this exact CPU/GPU
+combo) and **aleatoric** uncertainty (residual noise in the training
+data). The further you stray from a benched platform, the wider the band.
+
 `predict` works for any CPU/GPU you can spell from the spec catalogues:
 
 ```bash
@@ -53,13 +66,35 @@ If both CPU and GPU are in the baseline (5 platforms), the prediction uses
 measured cache sizes etc. directly. Otherwise the regressor falls back on
 hardware features synthesised from spec CSVs — works but less accurate.
 
-## Reproducing on a new platform — improve baseline accuracy
+### Inverse problem — cheapest PC for a latency target
+
+`make recommend` walks `specs/dns_pcs.json` (1500 pre-built PCs scraped
+from dns-shop.ru/custompc/user-pc/) and returns the cheapest builds whose
+predicted latency upper-bound fits your target:
+
+```bash
+make recommend MODEL=yolov8m.pt IMG=640 BATCH=1 \
+    LATENCY=0.040 BUDGET=200000 TOP_K=5     # ≤40 ms, ≤200 000 ₽
+```
+
+The filter is conservative — `t_hi ≤ LATENCY` rather than `t_pred ≤
+LATENCY` — so high-uncertainty unseen hardware whose point estimate
+happens to fall below the target gets rejected. Use a relaxed
+`LATENCY ≈ 1.5 × target` if you want to see more options. Output columns:
+`price_rub`, `predicted_t_s`, `t_lo`, `t_hi`, the catalogue-matched CPU
+and GPU names, and a direct URL to the build.
+
+The DNS catalogue is a one-shot snapshot — refresh with
+`python scripts/scrape_dns_pcs.py` (requires Playwright/patchright and a
+real display; see the script's docstring).
+
+## Running benchmarks
 
 **Prerequisites:**
 
 - Make sure Docker Engine 24+ is installed and the daemon is running (`docker info`
   succeeds). On Linux, your user is in the `docker` group; on Windows/macOS,
-  Docker Desktop is open.
+  Docker Desktop is open. **Also check VM memory note below**.
 - The **NVIDIA Container Toolkit** must also be set up if you want GPU
   benchmarks — see install instructions below. Verify with:
   ```bash
@@ -76,6 +111,17 @@ hardware features synthesised from spec CSVs — works but less accurate.
   make install                       # pip install -r requirements.txt
   ```
 
+### VM memory note (Docker Desktop / WSL2)
+
+The benchmark containers read `psutil.virtual_memory()` from inside the VM,
+not the host. If you're on Docker Desktop or WSL2, raise the VM cap before
+running `make collect`:
+
+- **Windows + WSL2:** `%USERPROFILE%\.wslconfig` → `[wsl2]\nmemory="<N>GB"`
+  → `wsl --shutdown`.
+- **macOS / Hyper-V:** Docker Desktop → Settings → Resources → Memory slider.
+- **Native Linux:** containers inherit host RAM; nothing to change.
+
 #### Installing the NVIDIA Container Toolkit
 
 Pre-requisite: a working NVIDIA driver on the host (`nvidia-smi` runs and
@@ -86,11 +132,8 @@ it does not install one.
 
 ```bash
 # 1. Add NVIDIA's package repo
-curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-    | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
-    | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
-    | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
 
 # 2. Install
 sudo apt-get update
@@ -189,14 +232,21 @@ Classification families sweep 160–512 px, detection/segmentation sweep
                     data_new/merged_*.csv   ──┐
                                               │
                     data_base/data_base.csv ──┤   ──> train_model.py ──> data_new/reg_weights_new/
-                                              │       (preprocess + enrich_helpers
-                    model_arch_features.csv ──┘        to add arch + structural-share +
-                                                       roofline features)
+                                              │       (preprocess + enrich_helpers      │
+                    model_arch_features.csv ──┘        to add arch + structural-share + │
+                                                       roofline features;               │
+                                                       RMSEWithUncertainty loss)        │
+                                                                                        ▼
+                                                            predict.py          recommend.py
+                                                       virtual_ensembles    + dns_pcs.json
+                                                       → (t_lo, t_pred, t_hi)  → cheapest PC
 ```
 
-`predict.py` then loads those weights, looks up host features
-(baseline first, spec catalogues second), looks up model arch features,
-re-derives the same enrichment, and calls `CatBoostRegressor.predict()`.
+`predict.py` loads the weights, looks up host features (baseline first,
+spec catalogues second), looks up model arch features, re-derives the
+same enrichment, and calls `virtual_ensembles_predict` to recover
+mean + epistemic + aleatoric variance. `recommend.py` reuses the same
+predictor in batch mode over a scraped DNS-shop PC catalogue.
 
 ## Repository layout
 
@@ -214,40 +264,37 @@ re-derives the same enrichment, and calls `CatBoostRegressor.predict()`.
 │   ├── hardware_lookup.py           # CPU/GPU exact-name lookup from specs/
 │   ├── run_benchmark.py             # docker SDK orchestrator
 │   ├── merge_results.py             # cross-join tmp/data/*.csv
-│   ├── train_model.py               # CatBoost trainer
-│   ├── predict.py                   # CLI predictor
+│   ├── train_model.py               # CatBoost trainer (RMSEWithUncertainty)
+│   ├── predict.py                   # CLI predictor — point estimate + ~84% band
+│   ├── recommend.py                 # inverse problem: cheapest PC for a latency target
 │   └── streamlit_app.py             # browser UI
 ├── scripts/
 │   ├── compute_arch_features.py     # profile any registered model → arch features
 │   ├── enrich_dataset.py            # apply enrich_helpers to a CSV
-│   └── run_ablation.py              # Stage-2 feature-set ablation
+│   ├── run_ablation.py              # Stage-2 feature-set ablation
+│   └── scrape_dns_pcs.py            # build specs/dns_pcs.json from dns-shop.ru
 ├── specs/                           # CPU / GPU spec catalogues
 │   ├── amd-cpus.csv / intel-cpus.csv / benchmark-cpus.csv
-│   └── gpu_1986-2026.csv
+│   ├── gpu_1986-2026.csv
+│   └── dns_pcs.json                 # 1500-PC snapshot for `make recommend`
 ├── data_base/                       # shipped baseline
 │   ├── data_base.csv                # 7200 measurements (5 platforms × 24 YOLO × sweep)
 │   ├── model_arch_features.csv      # 73 models × arch features (FLOPs, op-type
 │   │                                #   histogram, attention/depthwise shares, …)
 │   └── reg_weights_base/            # baseline CatBoost weights
-├── data_new/                        # produced by make merge / make train
+├── data_new/                        # produced by make merge / make train / scrape
+│   ├── merged_*.csv                 # one per host you've benched
+│   └── reg_weights_new/             # CatBoost weights for predict / recommend
 ├── research/
 │   └── ablation_arch_features.md    # Stage-2 results
 ├── Makefile
 └── requirements.txt
 ```
 
-## VM memory note (Docker Desktop / WSL2)
 
-The benchmark containers read `psutil.virtual_memory()` from inside the VM,
-not the host. If you're on Docker Desktop or WSL2, raise the VM cap before
-running `make collect`:
-
-- **Windows + WSL2:** `%USERPROFILE%\.wslconfig` → `[wsl2]\nmemory="<N>GB"`
-  → `wsl --shutdown`.
-- **macOS / Hyper-V:** Docker Desktop → Settings → Resources → Memory slider.
-- **Native Linux:** containers inherit host RAM; nothing to change.
 
 ## External data sources
 
 - GPU specs: <https://www.kaggle.com/datasets/ellimaaac/gpus-specs-from-1986-to-2026>
 - CPU specs: <https://github.com/felixsteinke/cpu-spec-dataset>
+- DNS user PCs <https://www.dns-shop.ru/user-pc/>

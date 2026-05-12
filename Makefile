@@ -28,7 +28,7 @@ endif
 .DEFAULT_GOAL := help
 
 .PHONY: help install build run merge train predict clean ui \
-        bench-family arch-features arch-features-docker enrich collect
+        bench-family arch-features arch-features-docker enrich collect recommend
 
 help: ## show this help
 	@awk 'BEGIN {FS = ":.*## "; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} \
@@ -72,6 +72,11 @@ predict: ## predict: CPU=... GPU=... [RAM=32] MODEL=... IMG=... BATCH=... [USED_
 
 ui: ## launch Streamlit frontend
 	$(PYTHON) -m streamlit run $(SRC_DIR)/streamlit_app.py
+
+recommend: ## inverse: MODEL=... IMG=... BATCH=... LATENCY=... BUDGET=... [TOP_K=10]
+	$(PYTHON) $(SRC_DIR)/recommend.py --model $(MODEL) --img-size $(IMG) \
+	    --batch $(BATCH) --max-latency $(LATENCY) --max-budget $(BUDGET) \
+	    $(if $(TOP_K),--top-k $(TOP_K))
 
 # ----- multi-architecture pipeline ----- #
 

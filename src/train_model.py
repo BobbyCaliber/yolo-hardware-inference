@@ -68,7 +68,16 @@ CACHE_COLS = [
 ]
 TARGET_RAW = "predicting_times"
 TARGET_LOG = "log_time"
-MODEL_PARAMS = dict(iterations=600, depth=6, learning_rate=0.05, l2_leaf_reg=10, random_seed=42, verbose=0)
+MODEL_PARAMS = dict(
+    iterations=600, depth=6, learning_rate=0.05, l2_leaf_reg=10,
+    random_seed=42, verbose=0,
+    # RMSEWithUncertainty: model predicts (mean, log_variance) per row.
+    # posterior_sampling=True trains it so virtual_ensembles_predict() can
+    # later separate epistemic (model uncertainty, big for unseen hardware)
+    # from aleatoric (data noise) variance.
+    loss_function="RMSEWithUncertainty",
+    posterior_sampling=True,
+)
 
 
 @dataclass
@@ -99,16 +108,40 @@ def load_all_csvs(ref_path: Path, new_dir: Path) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+def _parse_compute_capability(v) -> float:
+    """Coerce a CC value to float (e.g. '(8, 6)' → 8.6).
+
+    Handles every form we've seen across pycuda versions and concat results:
+    tuple-string '(major, minor)', already-numeric floats/ints, NaN, empty.
+    Anything unrecognised becomes NaN rather than blowing up training.
+    """
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return float("nan")
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip().strip("()[]").replace(" ", "")
+    if not s:
+        return float("nan")
+    if "," in s:
+        major, _, minor = s.partition(",")
+        try:
+            return float(f"{int(major)}.{int(minor)}")
+        except ValueError:
+            return float("nan")
+    try:
+        return float(s)
+    except ValueError:
+        return float("nan")
+
+
 def preprocess(raw: pd.DataFrame, arch_csv: Path = DEFAULT_ARCH) -> pd.DataFrame:
     df = raw.drop(columns=[c for c in DROP_COLS if c in raw.columns]).copy()
     for c in CACHE_COLS:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    if df["Compute Capability (cuda version)"].dtype == object:
-        df['Compute Capability (cuda version)'] = (
-            df['Compute Capability (cuda version)']
-            .str.replace(',', '.').str[1:-1].str.replace(' ', '').astype(float)
-        )
+    df["Compute Capability (cuda version)"] = (
+        df["Compute Capability (cuda version)"].map(_parse_compute_capability).astype(float)
+    )
     df["used_gpu"] = df["used_gpu"].astype(int)
     df["pixels"] = df["model_img_size"] ** 2 * df["image_batch_size"]
     df["work_estimate"] = df["num_all_params"] * df["pixels"]
@@ -152,6 +185,9 @@ def cv_score(df: pd.DataFrame) -> dict | None:
         m = CatBoostRegressor(cat_features=CATEGORICAL, **MODEL_PARAMS)
         m.fit(X_tree.iloc[tr], y.iloc[tr])
         pred = m.predict(X_tree.iloc[va])
+        # RMSEWithUncertainty returns (mean, log_variance); take the mean for metrics.
+        if pred.ndim == 2:
+            pred = pred[:, 0]
         r2_log.append(r2_score(y.iloc[va], pred))
         lo, hi = y.iloc[tr].min() - 2, y.iloc[tr].max() + 2
         pred_c = np.clip(pred, lo, hi)

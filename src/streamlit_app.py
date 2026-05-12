@@ -24,6 +24,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SPECS_DIR = PROJECT_ROOT / "specs"
 DATA_BASE = PROJECT_ROOT / "data_base" / "data_base.csv"
 ARCH_CSV = PROJECT_ROOT / "data_base" / "model_arch_features.csv"
+DNS_JSON = PROJECT_ROOT / "specs" / "dns_pcs.json"
+
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 
 # ------------------------------------------------------------------ helpers
@@ -138,8 +141,8 @@ common_env = {
     "MERGE_TAG": merge_tag,
 }
 
-tab_pipeline, tab_predict, tab_maintenance, tab_data = st.tabs(
-    ["Pipeline", "Predict", "Maintenance", "Data"]
+tab_pipeline, tab_predict, tab_recommend, tab_maintenance, tab_data = st.tabs(
+    ["Pipeline", "Predict", "Recommend", "Maintenance", "Data"]
 )
 
 # ---------- Pipeline --------------------------------------------------------
@@ -198,31 +201,149 @@ with tab_predict:
         submitted = st.form_submit_button("predict", type="primary", use_container_width=True)
 
     if submitted:
-        extra_env = {
-            "CPU": cpu,
-            "GPU": gpu,
-            "RAM": str(ram),
-            "MODEL": model,
-            "IMG": str(img_size),
-            "BATCH": str(batch),
-            "USED_GPU": "1" if used_gpu else "0",
-        }
-        run_make("predict", extra_env=extra_env)
+        from predict import build_row, predict as _predict, _default_weights
+        weights_path = _default_weights()
+        meta_path = weights_path.parent / "metadata.json"
+        try:
+            row = build_row(cpu_name=cpu, gpu_name=gpu,
+                            used_gpu=1 if used_gpu else 0, ram_gb=int(ram),
+                            model_name=model, img_size=int(img_size),
+                            batch=int(batch))
+            t_pred, t_lo, t_hi = _predict(row, weights_path, meta_path,
+                                          with_uncertainty=True)
+        except SystemExit as e:
+            st.error(str(e))
+        else:
+            c1, c2, c3 = st.columns(3)
+            c1.metric("predicted", f"{t_pred*1000:.1f} ms")
+            c2.metric("lower (~16%)", f"{t_lo*1000:.1f} ms",
+                      delta=f"-{(t_pred - t_lo)*1000:.1f}", delta_color="off")
+            c3.metric("upper (~84%)", f"{t_hi*1000:.1f} ms",
+                      delta=f"+{(t_hi - t_pred)*1000:.1f}", delta_color="off")
+            band = "(no uncertainty: legacy weights)" if t_lo == t_hi else \
+                   f"band is `exp(μ ± σ)` in log-space — wider = model is less certain about this exact hardware combo"
+            st.caption(band)
+            st.caption(f"weights: `{weights_path.relative_to(PROJECT_ROOT)}`")
 
-    st.divider()
-    if st.button("List models (predict → --list-models)"):
-        # direct script invocation — there's no dedicated Makefile target
-        placeholder = st.container(height=400, border=True).empty()
-        log: list[str] = []
-        proc = subprocess.Popen(
-            [sys.executable, str(PROJECT_ROOT / "src" / "predict.py"), "--list-models"],
-            cwd=PROJECT_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+# ---------- Recommend -------------------------------------------------------
+with tab_recommend:
+    st.subheader("Cheapest PC for a latency target")
+    st.caption(
+        "Walks `specs/dns_pcs.json` (1500 pre-built PCs scraped from "
+        "dns-shop.ru/custompc/user-pc/) and returns builds whose predicted "
+        "latency UPPER bound (`t_hi`, ~84%-ile) fits your target. Conservative "
+        "by design — high-uncertainty unseen hardware gets rejected."
+    )
+
+    if not DNS_JSON.is_file():
+        st.warning(
+            f"`{DNS_JSON.relative_to(PROJECT_ROOT)}` not found. "
+            f"Run `python scripts/scrape_dns_pcs.py` first."
         )
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            log.append(line.rstrip())
-            placeholder.code("\n".join(log), language="bash")
-        proc.wait()
+    else:
+        import json as _json
+        _dns_meta = _json.loads(DNS_JSON.read_text(encoding="utf-8"))
+        st.caption(
+            f"catalogue: {_dns_meta['scraped_count']} builds  ·  "
+            f"scraped {_dns_meta['scraped_at'][:10]}  ·  "
+            f"total listed on DNS: {_dns_meta.get('total_listed', '?')}"
+        )
+
+    with st.form("recommend_form"):
+        c1, c2 = st.columns(2)
+        with c1:
+            r_model = st.selectbox(
+                "Model", models or ["yolov8m.pt"],
+                index=(models.index("yolov8m.pt") if "yolov8m.pt" in models else 0),
+                key="r_model",
+            )
+            r_img = st.number_input("Image size (px)", min_value=32, max_value=4096,
+                                    value=640, step=32, key="r_img")
+            r_batch = st.number_input("Batch size", min_value=1, max_value=256,
+                                      value=1, key="r_batch")
+        with c2:
+            r_latency_ms = st.number_input(
+                "Max latency (ms)", min_value=1.0, max_value=10000.0,
+                value=40.0, step=5.0,
+                help="t_hi (upper 84% bound) must be ≤ this",
+            )
+            r_budget = st.number_input(
+                "Max budget (₽)", min_value=10_000, max_value=2_000_000,
+                value=200_000, step=10_000,
+            )
+            r_top_k = st.number_input("Top K (cheapest)", min_value=1,
+                                       max_value=50, value=10)
+
+        r_submitted = st.form_submit_button("find builds", type="primary",
+                                            use_container_width=True,
+                                            disabled=not DNS_JSON.is_file())
+
+    if r_submitted and DNS_JSON.is_file():
+        from recommend import recommend as _recommend
+        with st.spinner("matching hardware + predicting latency …"):
+            try:
+                result = _recommend(
+                    model_name=r_model,
+                    img_size=int(r_img),
+                    batch=int(r_batch),
+                    max_latency_s=r_latency_ms / 1000.0,
+                    max_budget_rub=float(r_budget),
+                    dns_json=DNS_JSON,
+                    top_k=int(r_top_k),
+                )
+            except SystemExit as e:
+                st.error(str(e))
+                result = pd.DataFrame()
+
+        if result.empty:
+            # Re-run with the latency cap removed to surface the achievable floor.
+            probe = _recommend(
+                model_name=r_model, img_size=int(r_img), batch=int(r_batch),
+                max_latency_s=10.0, max_budget_rub=float(r_budget),
+                dns_json=DNS_JSON, top_k=1,
+            )
+            if probe.empty:
+                st.warning(
+                    f"No builds within {r_budget:,} ₽ have matchable hardware. "
+                    f"Raise the budget."
+                )
+            else:
+                t_hi_min = probe["t_hi"].min() * 1000
+                t_pred_min = probe["predicted_t_s"].min() * 1000
+                st.warning(
+                    f"No builds meet your latency cap of {r_latency_ms:.0f} ms "
+                    f"at batch={int(r_batch)}. The fastest matchable build within "
+                    f"{r_budget:,} ₽ has  t_pred ≈ {t_pred_min:.0f} ms  /  "
+                    f"t_hi ≈ {t_hi_min:.0f} ms. Latency scales roughly linearly "
+                    f"with batch — try batch=1 or raise the latency target above "
+                    f"{t_hi_min:.0f} ms."
+                )
+        else:
+            display = result.copy()
+            display["price"] = display["price_rub"].apply(lambda x: f"{int(x):,} ₽")
+            display["t_pred (ms)"] = (display["predicted_t_s"] * 1000).round(1)
+            display["t_lo (ms)"] = (display["t_lo"] * 1000).round(1)
+            display["t_hi (ms)"] = (display["t_hi"] * 1000).round(1)
+            display = display[[
+                "price", "t_pred (ms)", "t_lo (ms)", "t_hi (ms)",
+                "cpu_matched", "gpu_matched", "ram_gb",
+                "dns_cpu_name", "dns_gpu_name", "url",
+            ]]
+            st.dataframe(
+                display,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "url": st.column_config.LinkColumn("link", display_text="open"),
+                    "dns_cpu_name": st.column_config.TextColumn(width="medium"),
+                    "dns_gpu_name": st.column_config.TextColumn(width="medium"),
+                },
+            )
+            st.caption(
+                f"Showing top {len(display)} by price. `cpu_matched` / "
+                f"`gpu_matched` are the spec-catalogue names the predictor "
+                f"actually used (fuzzy-matched from the DNS retail names)."
+            )
 
 # ---------- Maintenance -----------------------------------------------------
 with tab_maintenance:

@@ -95,11 +95,10 @@ def build_row(*, cpu_name: str, gpu_name: str, used_gpu: int, ram_gb: int,
     for c in CACHE_COLS:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    if df["Compute Capability (cuda version)"].dtype == object:
-        df["Compute Capability (cuda version)"] = (
-            df["Compute Capability (cuda version)"].astype(str)
-            .str.replace(",", ".").str[1:-1].str.replace(" ", "").astype(float)
-        )
+    from train_model import _parse_compute_capability
+    df["Compute Capability (cuda version)"] = (
+        df["Compute Capability (cuda version)"].map(_parse_compute_capability).astype(float)
+    )
 
     df["pixels"] = df["model_img_size"] ** 2 * df["image_batch_size"]
     df["work_estimate"] = df["num_all_params"] * df["pixels"]
@@ -110,7 +109,11 @@ def build_row(*, cpu_name: str, gpu_name: str, used_gpu: int, ram_gb: int,
     return enrich_helpers.enrich(df, arch_csv=ARCH_CSV)
 
 
-def predict(row_df: pd.DataFrame, weights_path: Path, meta_path: Path) -> float:
+def predict(row_df: pd.DataFrame, weights_path: Path, meta_path: Path,
+            with_uncertainty: bool = False) -> float | tuple[float, float, float]:
+    """Returns predicted seconds. With `with_uncertainty=True`, returns
+    `(mean, t_lo, t_hi)` — the central estimate plus a ~84% band derived from
+    CatBoost virtual ensembles (μ ± σ_total in log-space, exp'd to seconds)."""
     if not weights_path.is_file():
         sys.exit(f"model weights missing: {weights_path} (run `make train`)")
     if not meta_path.is_file():
@@ -129,7 +132,36 @@ def predict(row_df: pd.DataFrame, weights_path: Path, meta_path: Path) -> float:
     for c in meta["categorical_features"]:
         if c in X.columns:
             X[c] = X[c].astype("category")
-    return float(np.exp(model.predict(X)[0]))
+
+    trained_with_uncertainty = (
+        meta.get("model_params", {}).get("loss_function") == "RMSEWithUncertainty"
+    )
+    if not trained_with_uncertainty:
+        # Legacy weights — fall back to a point estimate even if caller asked
+        # for uncertainty (we don't have the variance head to inspect).
+        pred = model.predict(X)
+        if pred.ndim == 2:
+            pred = pred[:, 0]
+        sec = float(np.exp(pred[0]))
+        return (sec, sec, sec) if with_uncertainty else sec
+
+    if not with_uncertainty:
+        pred = model.predict(X)
+        if pred.ndim == 2:
+            pred = pred[:, 0]
+        return float(np.exp(pred[0]))
+
+    # TotalUncertainty: columns are (mean, knowledge_variance, data_variance).
+    out = model.virtual_ensembles_predict(
+        X, prediction_type="TotalUncertainty", virtual_ensembles_count=10,
+    )
+    mu = out[:, 0]
+    sigma_total = np.sqrt(out[:, 1] + out[:, 2])
+    # μ ± 1σ in log-space → ~84% band when back-exponentiated.
+    t_pred = np.exp(mu)
+    t_lo = np.exp(mu - sigma_total)
+    t_hi = np.exp(mu + sigma_total)
+    return float(t_pred[0]), float(t_lo[0]), float(t_hi[0])
 
 
 def main() -> None:
@@ -177,8 +209,9 @@ def main() -> None:
                     used_gpu=1 if args.used_gpu else 0, ram_gb=args.ram,
                     model_name=args.model, img_size=args.img_size, batch=args.batch)
 
-    sec = predict(row, weights_path, meta_path)
-    print(f"\npredicted inference time: {sec:.4f} sec  ({sec * 1000:.1f} ms)  "
+    sec, t_lo, t_hi = predict(row, weights_path, meta_path, with_uncertainty=True)
+    band = f"  [{t_lo*1000:.1f} – {t_hi*1000:.1f} ms ~84% band]" if t_lo != t_hi else ""
+    print(f"\npredicted inference time: {sec:.4f} sec  ({sec * 1000:.1f} ms){band}  "
           f"for {args.model} @ {args.img_size}px × batch {args.batch} on "
           f"{'GPU' if args.used_gpu else 'CPU'}")
 
