@@ -28,6 +28,8 @@ DNS_JSON = PROJECT_ROOT / "specs" / "dns_pcs.json"
 
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from hardware_lookup import list_known_cpus, list_known_gpus  # noqa: E402
+
 
 # ------------------------------------------------------------------ helpers
 
@@ -71,29 +73,12 @@ def run_make(target: str, extra_env: dict[str, str] | None = None,
 
 @st.cache_data(show_spinner=False)
 def load_cpu_names() -> list[str]:
-    names: list[str] = []
-    for path, col in [
-        (SPECS_DIR / "amd-cpus.csv", "Model"),
-        (SPECS_DIR / "intel-cpus.csv", "CpuName"),
-        (SPECS_DIR / "benchmark-cpus.csv", "CpuName"),
-    ]:
-        if path.is_file():
-            try:
-                df = pd.read_csv(path, low_memory=False, usecols=[col])
-                names.extend(df[col].dropna().astype(str).tolist())
-            except Exception:
-                pass
-    return sorted(set(names))
+    return list_known_cpus()
 
 
 @st.cache_data(show_spinner=False)
 def load_gpu_names() -> list[str]:
-    path = SPECS_DIR / "gpu_1986-2026.csv"
-    if not path.is_file():
-        return []
-    df = pd.read_csv(path, low_memory=False, usecols=["Brand", "Name"])
-    full = (df["Brand"].fillna("") + " " + df["Name"].fillna("")).str.strip()
-    return sorted(set(full[full.str.len() > 0].tolist()))
+    return list_known_gpus()
 
 
 @st.cache_data(show_spinner=False)
@@ -119,8 +104,8 @@ def load_baseline_platforms() -> pd.DataFrame:
 
 # ------------------------------------------------------------------ layout
 
-st.set_page_config(page_title="YOLO Hardware Predict", page_icon="▶️", layout="wide")
-st.title("YOLO Hardware Predict")
+st.set_page_config(page_title="CV Hardware Predict", page_icon="▶️", layout="wide")
+st.title("CV Hardware Predict")
 
 with st.sidebar:
     st.header("Global settings")
@@ -194,7 +179,7 @@ with tab_predict:
                                  index=(models.index("yolov8m.pt") if "yolov8m.pt" in models else 0))
         with c2:
             gpu = st.selectbox("GPU", gpu_names or [""], index=0 if gpu_names else None)
-            used_gpu = st.checkbox("If Yolo inference on GPU", value=True)
+            used_gpu = st.checkbox("If CV inference on GPU", value=True)
             img_size = st.number_input("Image size (px)", min_value=32, max_value=4096,
                                         value=640, step=32)
             batch = st.number_input("Batch size", min_value=1, max_value=256, value=5)
