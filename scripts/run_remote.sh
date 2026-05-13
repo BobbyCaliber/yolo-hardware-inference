@@ -155,6 +155,7 @@ run_model() {
     # layout; on the remote we put src/ on PYTHONPATH so runners/ still resolves.
     DATA_DIR="\$PWD/data" \\
     IMAGES_DIR="\$PWD/src/check_model_predict/images" \\
+    WEIGHTS_DIR="\$PWD/weights" \\
     YOLO_CONFIG_DIR="\$PWD/weights" \\
     HF_HOME="\$PWD/weights/hf" \\
     TORCH_HOME="\$PWD/weights/torch" \\

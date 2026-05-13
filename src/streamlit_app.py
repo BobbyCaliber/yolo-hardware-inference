@@ -176,9 +176,10 @@ with tab_predict:
     st.caption(
         "CPU/GPU dropdowns cover the full spec catalogues "
         "(~7800 CPUs, ~2900 GPUs). Hardware features come from "
-        "the baseline if the pair is among the 5 already-benchmarked "
-        "platforms; otherwise from `specs/*.csv`. Model dropdown lists every "
-        "model with cached arch features."
+        "the baseline if the pair is among the 8 already-benchmarked "
+        "platforms; otherwise from `specs/*.csv` (uncertainty band widens "
+        "the further you stray from a benched platform). Model dropdown "
+        "lists every model with cached arch features."
     )
     cpu_names = load_cpu_names()
     gpu_names = load_gpu_names()
@@ -361,10 +362,42 @@ with tab_maintenance:
 # ---------- Data preview ----------------------------------------------------
 with tab_data:
     st.subheader("Data overview")
+
+    # Current weights / CV metrics summary
+    import json as _json2
+    new_meta = PROJECT_ROOT / "data_new" / "reg_weights_new" / "metadata.json"
+    base_meta = PROJECT_ROOT / "data_base" / "reg_weights_base" / "metadata.json"
+    meta_path = new_meta if new_meta.is_file() else (base_meta if base_meta.is_file() else None)
+    if meta_path:
+        meta = _json2.loads(meta_path.read_text())
+        cv = meta.get("cv") or {}
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("rows trained", f"{meta.get('rows_trained', '?'):,}")
+        c2.metric("groups (cpu × gpu)", cv.get("n_groups", "?"))
+        c3.metric("CV R² log",
+                  f"{cv.get('cv_r2_log', 0):.3f}" if cv else "—")
+        c4.metric("CV MAE (s)",
+                  f"{cv.get('cv_mae_sec', 0):.3f}" if cv else "—")
+        st.caption(
+            f"weights: `{meta_path.parent.relative_to(PROJECT_ROOT)}` · "
+            f"loss: `{meta.get('model_params', {}).get('loss_function', '?')}` · "
+            f"trained: {meta.get('trained_at_utc', '?')[:10]}"
+        )
+
     if DATA_BASE.is_file():
         st.markdown(f"**`data_base/data_base.csv`** — {DATA_BASE.stat().st_size / 1024:.0f} KB")
         df_base = pd.read_csv(DATA_BASE)
-        st.caption(f"{len(df_base):,} rows × {len(df_base.columns)} cols")
+        st.caption(f"{len(df_base):,} rows × {len(df_base.columns)} cols  ·  "
+                   f"{df_base.groupby(['cpu_name','gpu_name']).ngroups} platforms  ·  "
+                   f"{df_base['model_name'].nunique()} models")
+
+        with st.expander("Benched platforms", expanded=False):
+            plat = (df_base
+                    .groupby(['cpu_name', 'gpu_name'])
+                    .size().reset_index(name='rows')
+                    .sort_values('rows', ascending=False))
+            st.dataframe(plat, use_container_width=True, hide_index=True)
+
         st.dataframe(df_base.head(200), use_container_width=True, height=300)
     else:
         st.info("`data_base/data_base.csv` not found.")
@@ -373,6 +406,12 @@ with tab_data:
     if data_new.is_dir():
         csvs = sorted(data_new.glob("*.csv"))
         if csvs:
-            st.markdown("**`data_new/*.csv`** (fresh benchmark runs)")
+            st.markdown("**`data_new/*.csv`** (fresh benchmark runs — added to "
+                        "training on top of `data_base.csv`)")
             for p in csvs:
                 st.markdown(f"- `{p.relative_to(PROJECT_ROOT)}` — {p.stat().st_size / 1024:.0f} KB")
+            st.caption(
+                "Heads-up: if any of these CSVs has already been folded into "
+                "`data_base.csv`, remove it from `data_new/` before retraining — "
+                "otherwise the rows get counted twice."
+            )

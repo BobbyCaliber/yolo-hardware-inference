@@ -1,0 +1,98 @@
+[
+  {
+    "code": "A",
+    "label": "baseline (with model_name)",
+    "scheme": "hardware",
+    "n_features": 37,
+    "n_categorical": 4,
+    "n_splits": 5,
+    "r2_log_mean": 0.9207461072896418,
+    "r2_log_std": 0.03555894031763257,
+    "mape_mean": 0.400671670890541,
+    "mae_sec_mean": 0.6019839133994047
+  },
+  {
+    "code": "B",
+    "label": "+arch, model_name kept",
+    "scheme": "hardware",
+    "n_features": 96,
+    "n_categorical": 4,
+    "n_splits": 5,
+    "r2_log_mean": 0.9327451949000254,
+    "r2_log_std": 0.03409453476729462,
+    "mape_mean": 0.36864875039090195,
+    "mae_sec_mean": 0.5152032702905551
+  },
+  {
+    "code": "C",
+    "label": "-id +arch (no model_name/family)",
+    "scheme": "hardware",
+    "n_features": 94,
+    "n_categorical": 2,
+    "n_splits": 5,
+    "r2_log_mean": 0.9320312178196299,
+    "r2_log_std": 0.036833153933235684,
+    "mape_mean": 0.3666821551107572,
+    "mae_sec_mean": 0.5296688362059669
+  },
+  {
+    "code": "D",
+    "label": "C + roofline (log_t_theoretical)",
+    "scheme": "hardware",
+    "n_features": 96,
+    "n_categorical": 2,
+    "n_splits": 5,
+    "r2_log_mean": 0.9136066112957492,
+    "r2_log_std": 0.09698611045854456,
+    "mape_mean": 0.3348081030499366,
+    "mae_sec_mean": 0.552500631619739
+  },
+  {
+    "code": "A",
+    "label": "baseline (with model_name)",
+    "scheme": "family",
+    "n_features": 37,
+    "n_categorical": 4,
+    "n_splits": 6,
+    "r2_log_mean": 0.8159228977817893,
+    "r2_log_std": 0.06756769611653252,
+    "mape_mean": 0.7668293039912695,
+    "mae_sec_mean": 0.8268758224689338
+  },
+  {
+    "code": "B",
+    "label": "+arch, model_name kept",
+    "scheme": "family",
+    "n_features": 96,
+    "n_categorical": 4,
+    "n_splits": 6,
+    "r2_log_mean": 0.9120704986254625,
+    "r2_log_std": 0.07333051975279146,
+    "mape_mean": 0.3173836103044153,
+    "mae_sec_mean": 0.3761663641600031
+  },
+  {
+    "code": "C",
+    "label": "-id +arch (no model_name/family)",
+    "scheme": "family",
+    "n_features": 94,
+    "n_categorical": 2,
+    "n_splits": 6,
+    "r2_log_mean": 0.90589281110402,
+    "r2_log_std": 0.0787210318394965,
+    "mape_mean": 0.3407403368738499,
+    "mae_sec_mean": 0.3584898409548571
+  },
+  {
+    "code": "D",
+    "label": "C + roofline (log_t_theoretical)",
+    "scheme": "family",
+    "n_features": 96,
+    "n_categorical": 2,
+    "n_splits": 6,
+    "r2_log_mean": 0.9057396735423892,
+    "r2_log_std": 0.07764968147606316,
+    "mape_mean": 0.3502569875603459,
+    "mae_sec_mean": 0.3863730102110137
+  }
+]

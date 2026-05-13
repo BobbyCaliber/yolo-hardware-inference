@@ -1,0 +1,99 @@
+feature,importance
+log_t_theoretical,20.880076579876597
+t_theoretical,16.282676258481594
+activation_bytes_actual,8.059231983267344
+used_gpu,5.3935795886335525
+compute_throughput,4.311128265243583
+peak_activation_ref,4.0616711466483055
+pixels,3.857025168562993
+image_batch_size,2.442168543065916
+model_img_size,1.6705268060162983
+Frequency (MHz),1.6672410062438061
+flops_actual,1.5522424768033258
+model_family,1.5300710276307643
+work_estimate,1.3558788116904021
+op_linear_flops,1.2191516446317836
+l1_instruction_cache_size (KB),1.130287370846038
+op_linear_act,1.1294409053821846
+linear_flops_ratio,1.030252702977144
+op_upsample_act,0.9666687970681441
+arithmetic_intensity,0.9258420445273791
+img_size_ref,0.879486177296097
+op_conv3x3_n,0.863576873702459
+conv1x1_flops_ratio,0.741321488936945
+op_norm_ln_act,0.7213845457470573
+gpu_peak_bw_gbps,0.6956579774291843
+ram_memory,0.6659140551674855
+cpu_throughput,0.6562619366309245
+l2_cache_size (KB),0.6152386110016651
+activation_bytes_ref,0.5877099418538554
+FP32 FLOPS (TFLOPS),0.5643322944288908
+depthwise_conv_op_ratio,0.5637981239648719
+depthwise_conv_flops_ratio,0.5473665679276863
+Clock Rate (GHz) boost,0.5446203156587816
+norm_ln_op_ratio,0.5416396584964367
+Number of Tensor Cores,0.5014944068763638
+conv3x3_flops_ratio,0.48844689756764903
+Number of SMs,0.4800436199936273
+op_linear_n,0.46215525087052584
+op_pool_n,0.43746093054742774
+op_conv3x3_act,0.43389986170409606
+flops_ref,0.4092582029168982
+op_activation_silu_act,0.3944151017738574
+num_ops,0.3778762323317482
+op_conv3x3_flops,0.3753061559639545
+gpu_name,0.3748625098085168
+op_conv1x1_act,0.3668325044602446
+op_activation_gelu_act,0.35911676985318547
+FP16 FLOPS (TFLOPS),0.35408410877374197
+op_pool_act,0.33694498832412606
+params_ref,0.3211089246766148
+Cores,0.31758305552821636
+op_depthwise_conv_flops,0.3088028506807074
+num_all_params,0.3087143455195721
+Max Frequency (MHz),0.24372460190873846
+op_activation_relu_act,0.24152694234618752
+op_conv1x1_n,0.23285310159729133
+depth,0.22028048235201045
+op_upsample_n,0.21641431921367488
+gpu_memory,0.1790030912485028
+op_depthwise_conv_act,0.17628216148865702
+norm_bn_op_ratio,0.17209134810861978
+op_norm_bn_n,0.15803550322233487
+op_attention_flops,0.15661463094928943
+l1_cache_size (KB),0.147593064176957
+Threads,0.1370011184715863
+Total CUDA Cores,0.13326529755483355
+cpu_peak_bw_gbps,0.12169402297998964
+op_depthwise_conv_n,0.1196034826142525
+l2_cache_size_per_core (KB),0.1150112491473702
+macs_ref,0.11073902595036945
+op_norm_bn_act,0.1102944489763139
+Compute Capability (cuda version),0.09421129818892837
+op_norm_ln_n,0.08202345863257396
+op_activation_gelu_n,0.0737225936774783
+op_attention_n,0.06738919522643956
+op_activation_silu_n,0.06289177356998475
+SMP Supported,0.06187352275627825
+l3_cache_size (MB),0.06156770925925413
+op_activation_relu_n,0.060864518077202924
+FP64 FLOPS (GFLOPS),0.060309088277088384
+op_attention_act,0.05899244914792495
+cpu_name,0.05765207158591896
+Cores per SM,0.05144876625351564
+attention_op_ratio,0.05130297185411034
+attention_flops_ratio,0.05102473242769407
+op_conv1x1_flops,0.04797120872494668
+launch_overhead_us_gpu,0.0028503360231594966
+op_pool_flops,0.0
+model_name,0.0
+launch_overhead_us_cpu,0.0
+op_activation_silu_flops,0.0
+op_norm_act,0.0
+op_upsample_flops,0.0
+op_norm_flops,0.0
+op_norm_bn_flops,0.0
+op_activation_relu_flops,0.0
+op_norm_n,0.0
+op_norm_ln_flops,0.0
+op_activation_gelu_flops,0.0

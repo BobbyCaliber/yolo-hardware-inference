@@ -1,26 +1,33 @@
-# yolo-hardware-predict
+# cv-hardware-predict
 
 **Predict CV-model inference time on arbitrary hardware — and find the
 cheapest PC that meets your latency target.**
 
 A trained CatBoost regressor that, given any `(cpu, gpu, model, image_size,
 batch)` tuple, returns expected inference time in seconds **with an
-uncertainty band**. The shipped baseline covers **5 hardware platforms ×
-24 YOLO models**; the model zoo itself spans **73 models across 21
-architecture families** (YOLO v5–11, RT-DETR, DETR, Segformer,
-Faster/Mask/Keypoint-RCNN, DeepLabV3, FCN, LR-ASPP, ViT, DeiT, Swin,
-EfficientNet, ResNet/ResNeXt, ConvNeXt). Hardware features for unseen
-CPUs/GPUs come from shipped spec catalogues (~7800 CPUs, ~2900 GPUs);
-model features come from pre-computed architectural fingerprints (FLOPs,
-op-type histogram, attention/depthwise shares, roofline estimate). So you
-can predict for hardware that's never been benchmarked.
+uncertainty band**. The current dataset covers **8 hardware platforms ×
+73 models across 21 architecture families** (YOLO v5–11, RT-DETR, DETR,
+Segformer, Faster/Mask/Keypoint-RCNN, DeepLabV3, FCN, LR-ASPP, ViT, DeiT,
+Swin, EfficientNet, ResNet/ResNeXt, ConvNeXt) — 26 220 measured rows in
+total. Hardware features for unseen CPUs/GPUs come from shipped spec
+catalogues (~7800 CPUs, ~2900 GPUs); model features come from pre-computed
+architectural fingerprints (FLOPs, op-type histogram, attention/depthwise
+shares, roofline estimate). So you can predict for hardware that's never
+been benchmarked.
 
 The regressor is trained with CatBoost's `RMSEWithUncertainty` loss, so
 every prediction comes with a `(t_lo, t_pred, t_hi)` band — wider for
 hardware far from the training distribution, narrower for the platforms
 we've actually benched. `make recommend` uses the band to walk a 1500-PC
-catalogue scraped from dns-shop.ru and surface the cheapest build whose
+catalogue scraped from popular hardware store and surface the cheapest build whose
 **upper** latency bound still fits your target.
+
+**Current metrics** (GroupKFold by `cpu × gpu`, 5 folds): R² log = 0.913,
+MAE = 0.575 s. Seven of the eight platforms predict at R² ≥ 0.92; one
+high-end EPYC 9124 + RTX 6000 Ada extrapolates harder (R² ≈ 0.73 when
+held out) and drags the mean — full breakdown in
+`research/scaling_analysis.ipynb`. Arch features replace `model_name` on
+the new-architecture axis (LOFO R²: 0.82 without arch → 0.91 with arch + roofline) — see `research/ablation_arch_features.ipynb`.
 
 
 ## Requirements
@@ -56,20 +63,20 @@ data). The further you stray from a benched platform, the wider the band.
 `predict` works for any CPU/GPU you can spell from the spec catalogues:
 
 ```bash
-python src/predict.py --list-platforms        # 5 baseline pairs (best accuracy)
+python src/predict.py --list-platforms        # 8 measured baseline pairs (best accuracy)
 python src/predict.py --list-known-cpus       # ~7800 CPUs
 python src/predict.py --list-known-gpus       # ~2900 GPUs
 python src/predict.py --list-models           # registered model_names
 ```
 
-If both CPU and GPU are in the baseline (5 platforms), the prediction uses
+If both CPU and GPU are among the 8 benched platforms, the prediction uses
 measured cache sizes etc. directly. Otherwise the regressor falls back on
-hardware features synthesised from spec CSVs — works but less accurate.
+hardware features synthesised from spec CSVs — works but less accurate
+(and the uncertainty band is correspondingly wider).
 
 ### Inverse problem — cheapest PC for a latency target
 
-`make recommend` walks `specs/dns_pcs.json` (1500 pre-built PCs scraped
-from dns-shop.ru/custompc/user-pc/) and returns the cheapest builds whose
+`make recommend` walks `specs/dns_pcs.json` (1500 pre-built PCs scraped) and returns the cheapest builds whose
 predicted latency upper-bound fits your target:
 
 ```bash
@@ -83,10 +90,6 @@ happens to fall below the target gets rejected. Use a relaxed
 `LATENCY ≈ 1.5 × target` if you want to see more options. Output columns:
 `price_rub`, `predicted_t_s`, `t_lo`, `t_hi`, the catalogue-matched CPU
 and GPU names, and a direct URL to the build.
-
-The DNS catalogue is a one-shot snapshot — refresh with
-`python scripts/scrape_dns_pcs.py` (requires Playwright/patchright and a
-real display; see the script's docstring).
 
 ## Running benchmarks
 
@@ -174,6 +177,16 @@ make collect                     # build → bench every family → merge → en
 pipeline (merge → enrich → train). Output: a refreshed
 `data_new/reg_weights_new/catboost_model.cbm` that the predictor will
 prefer over the shipped baseline.
+
+**Pipeline note — avoid double-counting after a merge.** `train_model.py`
+concatenates `data_base/data_base.csv` **with every CSV under `data_new/`**.
+If you've already folded a `data_new/merged_*.csv` into `data_base.csv`
+(promoted it to "shipped"), move or delete that file before retraining —
+otherwise those rows get counted twice and the worst held-out fold collapses
+(observed: 48 120 rows = 26 220 + 5 × 4 380 duplicates → fold-5 R² drops to
+≈0.73 from group-leakage). After `make merge`, the new CSV in `data_new/`
+is fresh and intentionally additive; only deduplicate when you've explicitly
+promoted rows into `data_base.csv`.
 
 The CPU/GPU containers detect everything they need from the host — no
 external bandwidth lookup required:
@@ -278,15 +291,21 @@ predictor in batch mode over a scraped DNS-shop PC catalogue.
 │   ├── gpu_1986-2026.csv
 │   └── dns_pcs.json                 # 1500-PC snapshot for `make recommend`
 ├── data_base/                       # shipped baseline
-│   ├── data_base.csv                # 7200 measurements (5 platforms × 24 YOLO × sweep)
+│   ├── data_base.csv                # 26 220 measurements (8 platforms × 73 models × sweep)
 │   ├── model_arch_features.csv      # 73 models × arch features (FLOPs, op-type
 │   │                                #   histogram, attention/depthwise shares, …)
-│   └── reg_weights_base/            # baseline CatBoost weights
-├── data_new/                        # produced by make merge / make train / scrape
-│   ├── merged_*.csv                 # one per host you've benched
-│   └── reg_weights_new/             # CatBoost weights for predict / recommend
+│   └── reg_weights_base/            # baseline CatBoost weights (point-estimate)
+├── data_new/                        # produced by make merge / make train
+│   ├── merged_*.csv                 # one per host you've benched (not yet folded
+│   │                                #   into data_base.csv)
+│   └── reg_weights_new/             # CatBoost weights (RMSEWithUncertainty) +
+│                                    #   metadata.json — predict / recommend pick
+│                                    #   these up automatically if present
 ├── research/
-│   └── ablation_arch_features.md    # Stage-2 results
+│   ├── scaling_analysis.ipynb       # what 5→8-platform scaling did to metrics
+│   ├── ablation_arch_features.ipynb # do arch features replace model_name?
+│   ├── predict_yolo_analysis.ipynb  # original EDA + model comparison
+│   └── graphs_regression_*.ipynb    # earlier experiments
 ├── Makefile
 └── requirements.txt
 ```
