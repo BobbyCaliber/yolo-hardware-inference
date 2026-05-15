@@ -126,8 +126,27 @@ common_env = {
     "MERGE_TAG": merge_tag,
 }
 
-tab_pipeline, tab_predict, tab_recommend, tab_maintenance, tab_data = st.tabs(
-    ["Pipeline", "Predict", "Recommend", "Maintenance", "Data"]
+tab_pipeline, tab_predict, tab_recommend, tab_models, tab_maintenance, tab_data = st.tabs(
+    ["Pipeline", "Predict", "Recommend", "Models", "Maintenance", "Data"]
+)
+
+
+def model_family_of(model_name: str) -> str | None:
+    """Look up family for a model_name from the arch CSV (cache-free, cheap)."""
+    if not ARCH_CSV.is_file():
+        return None
+    df = pd.read_csv(ARCH_CSV, usecols=["model_name", "model_family"])
+    hit = df[df["model_name"] == model_name]
+    if hit.empty:
+        return None
+    return str(hit.iloc[0]["model_family"])
+
+
+CUSTOM_FAMILY_HINT = (
+    "Custom model — CatBoost was trained on native families (yolov8, rtdetr, "
+    "timm, torchvision-detection, …). For `family=custom` the regressor "
+    "extrapolates from arch features only, so accuracy is lower than for native "
+    "models. Treat the band as wider than shown."
 )
 
 # ---------- Pipeline --------------------------------------------------------
@@ -210,6 +229,8 @@ with tab_predict:
                    f"band is `exp(μ ± σ)` in log-space — wider = model is less certain about this exact hardware combo"
             st.caption(band)
             st.caption(f"weights: `{weights_path.relative_to(PROJECT_ROOT)}`")
+            if model_family_of(model) == "custom":
+                st.info(CUSTOM_FAMILY_HINT)
 
 # ---------- Recommend -------------------------------------------------------
 with tab_recommend:
@@ -330,6 +351,120 @@ with tab_recommend:
                 f"`gpu_matched` are the spec-catalogue names the predictor "
                 f"actually used (fuzzy-matched from the DNS retail names)."
             )
+            if model_family_of(r_model) == "custom":
+                st.info(CUSTOM_FAMILY_HINT)
+
+# ---------- Models (custom uploads) -----------------------------------------
+with tab_models:
+    st.subheader("Add your own model")
+    st.caption(
+        "Upload a CV model and it appears in the Predict / Recommend dropdowns. "
+        "We profile arch features once (FLOPs, params, op-histogram) and the "
+        "regressor predicts latency from those — no actual inference is run."
+    )
+    st.markdown(
+        "**Accepted formats**\n"
+        "- `.pt` — full pickled `nn.Module` (saved via `torch.save(model, 'name.pt')`). "
+        "State_dicts and TorchScript files are rejected.\n"
+        "- `.onnx` — exported via `torch.onnx.export(...)`. Converted to torch "
+        "internally with `onnx2torch`."
+    )
+    st.warning(
+        "Loading a `.pt` file executes arbitrary pickle code. Only upload models "
+        "you trust. ONNX is safer if the source is untrusted."
+    )
+
+    from custom_model_import import (  # noqa: E402
+        CustomModelError,
+        WEIGHTS_DIR,
+        list_custom_models,
+        register_custom_model,
+        remove_custom_model,
+    )
+
+    with st.form("upload_model_form", clear_on_submit=False):
+        uploaded = st.file_uploader("model file", type=["pt", "onnx"])
+        c1, c2, c3 = st.columns([2, 1, 1])
+        u_name = c1.text_input(
+            "model name",
+            value="",
+            placeholder="e.g. my_yolo_v1 (defaults to filename)",
+            help="Used as the dropdown label. Must be unique; an existing row "
+                 "with the same name is replaced.",
+        )
+        u_family = c2.text_input("family", value="custom")
+        u_img = c3.number_input("ref img size (px)", min_value=32, max_value=2048,
+                                value=640, step=32)
+        u_submit = st.form_submit_button("Profile and add", type="primary",
+                                         use_container_width=True)
+
+    if u_submit:
+        if uploaded is None:
+            st.error("pick a `.pt` or `.onnx` file first")
+        else:
+            stem = Path(uploaded.name).stem
+            target_name = (u_name.strip() or stem)
+            ext = Path(uploaded.name).suffix.lower()
+            tmp_dir = PROJECT_ROOT / "tmp" / "uploads"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            tmp_path = tmp_dir / f"_upload_{target_name}{ext}"
+            tmp_path.write_bytes(uploaded.getbuffer())
+
+            with st.spinner(f"profiling {target_name} @ {u_img}px (one forward pass) …"):
+                try:
+                    feats = register_custom_model(
+                        src_path=tmp_path,
+                        name=target_name,
+                        family=u_family or "custom",
+                        img_size=int(u_img),
+                    )
+                except CustomModelError as e:
+                    st.error(str(e))
+                    feats = None
+                except Exception as e:
+                    st.exception(e)
+                    feats = None
+                finally:
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
+
+            if feats:
+                load_models.clear()
+                st.success(f"added `{target_name}` — family `{u_family or 'custom'}`")
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("FLOPs", f"{feats['flops'] / 1e9:.2f} G")
+                m2.metric("params", f"{feats['params'] / 1e6:.2f} M")
+                m3.metric("activations", f"{feats['activation_bytes'] / 1e6:.1f} MB")
+                m4.metric("# ops", f"{feats['num_ops']}")
+                st.caption(
+                    f"weights saved to `{(WEIGHTS_DIR / (target_name + ext)).relative_to(PROJECT_ROOT)}` · "
+                    f"row appended to `data_base/model_arch_features.csv` · "
+                    "switch to the Predict or Recommend tab — it's in the dropdown now."
+                )
+
+    st.divider()
+    st.subheader("Uploaded models")
+    custom_df = list_custom_models()
+    if custom_df.empty:
+        st.info("no custom models yet — upload one above.")
+    else:
+        for _, row in custom_df.iterrows():
+            name = str(row["model_name"])
+            cc1, cc2, cc3, cc4, cc5 = st.columns([3, 2, 2, 2, 1])
+            cc1.write(f"**{name}**")
+            cc2.caption(f"{row.get('params', 0) / 1e6:.2f} M params")
+            cc3.caption(f"{row.get('flops', 0) / 1e9:.2f} GFLOPs")
+            cc4.caption(f"ref {int(row.get('img_size_ref', 0))}px · {int(row.get('num_ops', 0))} ops")
+            if cc5.button("delete", key=f"del_{name}"):
+                if remove_custom_model(name):
+                    load_models.clear()
+                    st.success(f"removed `{name}`")
+                    st.rerun()
+                else:
+                    st.error(f"`{name}` not found or is not a custom model")
+
 
 # ---------- Maintenance -----------------------------------------------------
 with tab_maintenance:

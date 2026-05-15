@@ -5,3 +5,5 @@ scikit-learn
 catboost
 streamlit>=1.32
 rapidfuzz>=3.0
+onnx
+onnx2torch

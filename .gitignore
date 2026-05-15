@@ -30,6 +30,9 @@ Thumbs.db
 tmp/
 catboost_info/
 
+# Uploaded custom models (Streamlit "Models" tab)
+user_models/weights/
+
 # YOLO weight files that may leak outside tmp/weights/ (e.g. if the script
 # is run from a different CWD during dev)
 *.pt
