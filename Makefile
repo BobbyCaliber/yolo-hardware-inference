@@ -28,7 +28,8 @@ endif
 .DEFAULT_GOAL := help
 
 .PHONY: help install build run merge train predict clean ui \
-        bench-family arch-features arch-features-docker enrich collect recommend
+        bench-family arch-features arch-features-docker enrich collect recommend \
+        recommend-rps test-workload
 
 help: ## show this help
 	@awk 'BEGIN {FS = ":.*## "; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} \
@@ -77,6 +78,16 @@ recommend: ## inverse: MODEL=... IMG=... BATCH=... LATENCY=... BUDGET=... [TOP_K
 	$(PYTHON) $(SRC_DIR)/recommend.py --model $(MODEL) --img-size $(IMG) \
 	    --batch $(BATCH) --max-latency $(LATENCY) --max-budget $(BUDGET) \
 	    $(if $(TOP_K),--top-k $(TOP_K))
+
+recommend-rps: ## throughput sizing: WORKLOAD=file.json BUDGET=... [DEADLINE=180] [MAX_GPUS=4] [GPU_ONLY=1]
+	$(PYTHON) $(SRC_DIR)/recommend_workload.py --workload $(WORKLOAD) \
+	    --max-budget $(BUDGET) --deadline $(or $(DEADLINE),180) \
+	    --max-gpus $(or $(MAX_GPUS),4) \
+	    $(if $(filter-out 0,$(GPU_ONLY)),--gpu-only) \
+	    $(if $(TOP_K),--top-k $(TOP_K))
+
+test-workload: ## run the throughput-sizing test suite
+	$(PYTHON) -m pytest $(CURDIR)/tests -q
 
 # ----- multi-architecture pipeline ----- #
 

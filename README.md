@@ -5,10 +5,10 @@ cheapest PC that meets your latency target.**
 
 A trained CatBoost regressor that, given any `(cpu, gpu, model, image_size,
 batch)` tuple, returns expected inference time in seconds **with an
-uncertainty band**. The current dataset covers **8 hardware platforms ×
+uncertainty band**. The current dataset covers **9 hardware platforms ×
 73 models across 21 architecture families** (YOLO v5–11, RT-DETR, DETR,
 Segformer, Faster/Mask/Keypoint-RCNN, DeepLabV3, FCN, LR-ASPP, ViT, DeiT,
-Swin, EfficientNet, ResNet/ResNeXt, ConvNeXt) — 26 220 measured rows in
+Swin, EfficientNet, ResNet/ResNeXt, ConvNeXt) — 33 449 measured rows in
 total. Hardware features for unseen CPUs/GPUs come from shipped spec
 catalogues (~7800 CPUs, ~2900 GPUs); model features come from pre-computed
 architectural fingerprints (FLOPs, op-type histogram, attention/depthwise
@@ -22,10 +22,10 @@ we've actually benched. `make recommend` uses the band to walk a 1500-PC
 catalogue scraped from popular hardware store and surface the cheapest build whose
 **upper** latency bound still fits your target.
 
-**Current metrics** (GroupKFold by `cpu × gpu`, 5 folds): R² log = 0.913,
-MAE = 0.575 s. Seven of the eight platforms predict at R² ≥ 0.92; one
-high-end EPYC 9124 + RTX 6000 Ada extrapolates harder (R² ≈ 0.73 when
-held out) and drags the mean — full breakdown in
+**Current metrics** (GroupKFold by `cpu × gpu`, 5 folds): R² log = 0.905,
+MAE = 0.480 s. Most platforms predict at R² ≥ 0.92; one held-out fold
+(the high-end EPYC 9124 + RTX 6000 Ada extrapolation) drops to R² ≈ 0.75
+and drags the mean — full breakdown in
 `research/scaling_analysis.ipynb`. Arch features replace `model_name` on
 the new-architecture axis (LOFO R²: 0.82 without arch → 0.91 with arch + roofline) — see `research/ablation_arch_features.ipynb`.
 
@@ -63,13 +63,13 @@ data). The further you stray from a benched platform, the wider the band.
 `predict` works for any CPU/GPU you can spell from the spec catalogues:
 
 ```bash
-python src/predict.py --list-platforms        # 8 measured baseline pairs (best accuracy)
+python src/predict.py --list-platforms        # 9 measured baseline pairs (best accuracy)
 python src/predict.py --list-known-cpus       # ~7800 CPUs
 python src/predict.py --list-known-gpus       # ~2900 GPUs
 python src/predict.py --list-models           # registered model_names
 ```
 
-If both CPU and GPU are among the 8 benched platforms, the prediction uses
+If both CPU and GPU are among the 9 benched platforms, the prediction uses
 measured cache sizes etc. directly. Otherwise the regressor falls back on
 hardware features synthesised from spec CSVs — works but less accurate
 (and the uncertainty band is correspondingly wider).
@@ -90,6 +90,76 @@ happens to fall below the target gets rejected. Use a relaxed
 `LATENCY ≈ 1.5 × target` if you want to see more options. Output columns:
 `price_rub`, `predicted_t_s`, `t_lo`, `t_hi`, the catalogue-matched CPU
 and GPU names, and a direct URL to the build.
+
+### Throughput / RPS sizing — cheapest hardware for a whole workload
+
+`make recommend` sizes **one** model against a latency target. Real deployments
+run **several models at once** (multiple processes on one GPU) and care about
+finishing a stream of frames before a **deadline**, not about a single frame's
+latency. `make recommend-rps` answers that: given a set of streams + a deadline
++ a budget, it returns the cheapest PC build (or, with `GPU_ONLY=1`, the cheapest
+GPU) that gets through everything in time — scaling to **several identical GPUs**
+when one can't keep up.
+
+**Model.** A GPU is one resource: parallel processes time-share it, they don't
+multiply its FLOPs. So the card must spend
+
+```
+required_gpu_seconds = Σ_streams( frames_i × best_per_frame_latency_i ) / util
+```
+
+seconds of compute, and that must fit inside the deadline (`util` ≈ 0.9 is a
+duty-cycle haircut). `best_per_frame_latency_i` is the lowest per-frame latency
+reachable by **batching** (higher batch → more throughput until it stops fitting
+in VRAM — swept automatically). If the work doesn't fit one card,
+`gpus_needed = ceil(required_gpu_seconds / deadline)` identical GPUs share it
+(capped by `MAX_GPUS`, default 4). Latencies use the conservative ~84 % upper
+band, same as `make recommend`.
+
+**Workload file** (`examples/workload_3min.json`) — process 2 min of capture
+within a 180 s deadline, mixing three models we benchmarked (a light YOLO, a
+heavy YOLO, and a non-YOLO RT-DETR transformer):
+
+```jsonc
+{
+  "deadline_s": 180,
+  "streams": [
+    {"name": "yolov8n", "model": "yolov8n.pt", "img_size": 480,
+     "rate_fps": 25, "duration_s": 120},          // → 3000 frames
+    {"name": "yolo11l", "model": "yolo11l.pt", "img_size": 640,
+     "frames": 48000},                            // heavy detector → bottleneck
+    {"name": "rtdetr-l", "model": "rtdetr-l.pt", "img_size": 640,
+     "frames": 500}                               // RT-DETR (not a YOLO)
+  ]
+}
+```
+
+**Unknown models are first-class.** Not every model is in our benchmark set, so
+a stream can also declare, instead of a registered `"model"`:
+- `"proxy": "<registered model>"` — predict with the closest model we *did*
+  bench (e.g. `"name": "yolo26l", "proxy": "yolov8l.pt"`), or
+- `"fixed_latency_ms": <n>` / `"fixed_fps": <n>` — plug in a per-frame latency
+  you measured yourself (e.g. `"name": "RoMa", "fixed_latency_ms": 120`),
+  bypassing the predictor entirely.
+
+```bash
+make recommend-rps WORKLOAD=examples/workload_3min.json BUDGET=250000
+make recommend-rps WORKLOAD=examples/workload_3min.json BUDGET=900000 GPU_ONLY=1
+# inline, no file (here showing a proxy + a measured-latency stream):
+python src/recommend_workload.py --max-budget 900000 \
+    --stream "model=yolov8n.pt,img=480,frames=3000" \
+    --stream "proxy=yolov8l.pt,name=yolo26l,img=640,frames=48000" \
+    --stream "name=RoMa,img=560,frames=500,fixed_latency_ms=120"
+```
+
+The output ranks feasible configs by total price (`gpus_needed × unit_price`),
+shows the per-stream batch / fps / GPU-seconds breakdown, and names the
+**bottleneck** stream. If nothing fits the budget it reports the *cheapest
+achievable* configuration instead — so you learn what the workload actually
+costs. (The example above is deliberately heavy: 48 000 frames of `yolo11l` at
+640 px in 180 s is ≈ 705 GPU-seconds — more than three cards' worth — so the
+cheapest config is **4× RX 7600 ≈ ₽290 000**, just over a ₽250 000 budget; relax
+the deadline, cut the frame count, or budget for more GPUs.)
 
 ## Running benchmarks
 
@@ -280,7 +350,13 @@ predictor in batch mode over a scraped DNS-shop PC catalogue.
 │   ├── train_model.py               # CatBoost trainer (RMSEWithUncertainty)
 │   ├── predict.py                   # CLI predictor — point estimate + ~84% band
 │   ├── recommend.py                 # inverse problem: cheapest PC for a latency target
+│   ├── workload.py                  # throughput model: additive GPU-seconds, batch sweep
+│   ├── recommend_workload.py        # inverse: cheapest HW for a concurrent workload (RPS)
 │   └── streamlit_app.py             # browser UI
+├── examples/
+│   └── workload_3min.json           # sample multi-model workload for recommend-rps
+├── tests/
+│   └── test_workload.py             # throughput-sizing tests (make test-workload)
 ├── scripts/
 │   ├── compute_arch_features.py     # profile any registered model → arch features
 │   ├── enrich_dataset.py            # apply enrich_helpers to a CSV
@@ -291,7 +367,7 @@ predictor in batch mode over a scraped DNS-shop PC catalogue.
 │   ├── gpu_1986-2026.csv
 │   └── dns_pcs.json                 # 1500-PC snapshot for `make recommend`
 ├── data_base/                       # shipped baseline
-│   ├── data_base.csv                # 26 220 measurements (8 platforms × 73 models × sweep)
+│   ├── data_base.csv                # 33 449 measurements (9 platforms × 73 models × sweep)
 │   ├── model_arch_features.csv      # 73 models × arch features (FLOPs, op-type
 │   │                                #   histogram, attention/depthwise shares, …)
 │   └── reg_weights_base/            # baseline CatBoost weights (point-estimate)

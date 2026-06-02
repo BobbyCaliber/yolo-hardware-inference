@@ -1,0 +1,28 @@
+{
+  "_comment": "Example concurrent workload: process 2 minutes of capture within a 3-minute (180s) deadline. All three models are in our benchmark set, so they are predicted directly (no proxy / fixed latency needed). Run: make recommend-rps WORKLOAD=examples/workload_3min.json BUDGET=250000",
+  "deadline_s": 180,
+  "streams": [
+    {
+      "name": "yolov8n",
+      "model": "yolov8n.pt",
+      "img_size": 480,
+      "rate_fps": 25,
+      "duration_s": 120,
+      "_note": "25 fps x 120 s = 3000 frames @ 480x480 (light detector)"
+    },
+    {
+      "name": "yolo11l",
+      "model": "yolo11l.pt",
+      "img_size": 640,
+      "frames": 48000,
+      "_note": "16 tiles x 25 fps x 120 s = 48000 frames @ 640x640 tiles (heavy detector, dominates GPU-seconds)"
+    },
+    {
+      "name": "rtdetr-l",
+      "model": "rtdetr-l.pt",
+      "img_size": 640,
+      "frames": 500,
+      "_note": "every 8th frame -> 500 frames @ 640x640 (RT-DETR transformer detector, not a YOLO)"
+    }
+  ]
+}

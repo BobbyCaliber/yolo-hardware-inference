@@ -126,8 +126,10 @@ common_env = {
     "MERGE_TAG": merge_tag,
 }
 
-tab_pipeline, tab_predict, tab_recommend, tab_models, tab_maintenance, tab_data = st.tabs(
-    ["Pipeline", "Predict", "Recommend", "Models", "Maintenance", "Data"]
+(tab_pipeline, tab_predict, tab_recommend, tab_workload, tab_models,
+ tab_maintenance, tab_data) = st.tabs(
+    ["Pipeline", "Predict", "Recommend", "Workload (RPS)", "Models",
+     "Maintenance", "Data"]
 )
 
 
@@ -354,6 +356,174 @@ with tab_recommend:
             if model_family_of(r_model) == "custom":
                 st.info(CUSTOM_FAMILY_HINT)
 
+# ---------- Workload (RPS) --------------------------------------------------
+with tab_workload:
+    st.subheader("Cheapest hardware for a concurrent workload")
+    st.caption(
+        "Several models running at once (multiple processes on one GPU), each "
+        "with a frame count, against a shared **deadline** + **budget**. A GPU "
+        "is one resource — parallel processes share it — so required compute is "
+        "the **sum of GPU-seconds** across streams (best batch per stream, "
+        "conservative ~84% latency). If one card can't finish in time, the work "
+        "shards across several identical GPUs."
+    )
+
+    models_w = load_models()
+    st.markdown("**Streams** — one row per model. For a model we haven't "
+                "benchmarked, either pick a similar registered model and tick "
+                "**proxy**, or leave *model* empty and set **fixed_latency_ms** "
+                "(a per-frame latency you measured).")
+
+    default_streams = pd.DataFrame([
+        {"name": "yolov8n", "model": "yolov8n.pt", "proxy": False,
+         "img_size": 480, "frames": 3000, "fixed_latency_ms": 0.0},
+        {"name": "yolo11l", "model": "yolo11l.pt", "proxy": False,
+         "img_size": 640, "frames": 48000, "fixed_latency_ms": 0.0},
+        {"name": "rtdetr-l", "model": "rtdetr-l.pt", "proxy": False,
+         "img_size": 640, "frames": 500, "fixed_latency_ms": 0.0},
+    ])
+    edited = st.data_editor(
+        default_streams,
+        num_rows="dynamic",
+        use_container_width=True,
+        key="workload_editor",
+        column_config={
+            "name": st.column_config.TextColumn("name", required=True),
+            "model": st.column_config.SelectboxColumn(
+                "model / proxy", options=[""] + models_w,
+                help="registered model to predict; leave empty for a custom "
+                     "model defined purely by fixed_latency_ms"),
+            "proxy": st.column_config.CheckboxColumn(
+                "proxy", help="treat 'model' as a stand-in for an unknown model"),
+            "img_size": st.column_config.NumberColumn("img_size", min_value=32,
+                                                      max_value=4096, step=32),
+            "frames": st.column_config.NumberColumn("frames", min_value=1, step=100),
+            "fixed_latency_ms": st.column_config.NumberColumn(
+                "fixed_latency_ms", min_value=0.0, step=10.0,
+                help=">0 ⇒ custom model: use this per-frame latency, ignore 'model'"),
+        },
+    )
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        w_deadline = st.number_input("Deadline (s)", min_value=1.0,
+                                     max_value=86400.0, value=180.0, step=10.0)
+        w_budget = st.number_input("Max budget (₽)", min_value=10_000,
+                                   max_value=5_000_000, value=250_000, step=10_000)
+    with c2:
+        w_max_gpus = st.number_input("Max identical GPUs", min_value=1,
+                                     max_value=16, value=4)
+        w_util = st.slider("GPU duty-cycle (util)", min_value=0.5, max_value=1.0,
+                           value=0.9, step=0.05)
+    with c3:
+        w_gpu_only = st.checkbox("GPU-only (rank cards, not full builds)",
+                                 value=False)
+        w_top_k = st.number_input("Top K", min_value=1, max_value=50, value=10)
+
+    w_go = st.button("size hardware", type="primary", use_container_width=True,
+                     disabled=not DNS_JSON.is_file())
+    if not DNS_JSON.is_file():
+        st.warning(f"`{DNS_JSON.relative_to(PROJECT_ROOT)}` not found. "
+                   "Run `python scripts/scrape_dns_pcs.py` first.")
+
+    if w_go and DNS_JSON.is_file():
+        import workload as _wl
+        import recommend_workload as _rw
+
+        streams = []
+        err = None
+        for r in edited.to_dict("records"):
+            if not r.get("frames"):
+                continue
+            d = {"name": (r.get("name") or "").strip() or None,
+                 "img_size": int(r["img_size"]), "frames": int(r["frames"])}
+            lat = r.get("fixed_latency_ms") or 0
+            if lat and float(lat) > 0:
+                d["fixed_latency_ms"] = float(lat)
+            elif (r.get("model") or "").strip():
+                key = "proxy" if r.get("proxy") else "model"
+                d[key] = r["model"].strip()
+            try:
+                streams.append(_wl.stream_from_dict(d))
+            except ValueError as e:
+                err = str(e)
+                break
+
+        if err:
+            st.error(err)
+        elif not streams:
+            st.error("add at least one stream with a positive frame count")
+        else:
+            with st.spinner("matching hardware + predicting throughput …"):
+                try:
+                    res = _rw.recommend_workload(
+                        streams, deadline_s=float(w_deadline),
+                        max_budget_rub=float(w_budget), util=float(w_util),
+                        max_gpus=int(w_max_gpus), gpu_only=bool(w_gpu_only),
+                        dns_json=DNS_JSON, top_k=int(w_top_k),
+                    )
+                except SystemExit as e:
+                    st.error(str(e)); res = pd.DataFrame()
+
+            total_frames = sum(s.frames for s in streams)
+            st.caption(f"{len(streams)} streams · {total_frames:,} frames total · "
+                       f"deadline {w_deadline:.0f}s · "
+                       f"{'GPU-only' if w_gpu_only else 'full PC builds'}")
+
+            if res.empty:
+                st.warning(
+                    f"No configuration can finish within {w_deadline:.0f}s using "
+                    f"≤{int(w_max_gpus)} identical GPUs. Raise max-GPUs, relax the "
+                    "deadline, or lower resolutions / frame counts.")
+            else:
+                in_budget = res[res["within_budget"]].head(int(w_top_k))
+                shown = in_budget if not in_budget.empty else res.head(int(w_top_k))
+                if in_budget.empty:
+                    cheapest = res.iloc[0]
+                    st.warning(
+                        f"Nothing fits ₽{w_budget:,.0f}. This workload needs at "
+                        f"least ₽{cheapest['total_price_rub']:,.0f} "
+                        f"({cheapest['gpus_needed']}× {cheapest['gpu']}). "
+                        "Showing the nearest achievable configs (over budget).")
+
+                disp = shown.copy()
+                disp["price"] = disp["total_price_rub"].apply(lambda x: f"{int(x):,} ₽")
+                disp = disp[[
+                    "price", "gpus_needed", "gpu", "cpu", "ram_gb",
+                    "gpu_seconds_needed", "headroom_pct", "streams_summary", "url",
+                ]]
+                st.dataframe(
+                    disp, use_container_width=True, hide_index=True,
+                    column_config={
+                        "url": st.column_config.LinkColumn("link", display_text="open"),
+                        "streams_summary": st.column_config.TextColumn(width="large"),
+                    },
+                )
+
+                top = shown.iloc[0]["_result"]
+                st.markdown(f"**Per-stream breakdown — top pick "
+                            f"({top.gpus_needed}× {shown.iloc[0]['gpu']}):**")
+                rows = []
+                for s in top.streams:
+                    rows.append({
+                        "stream": s.name,
+                        "img": s.img_size,
+                        "batch": "custom" if s.is_custom else str(s.batch),
+                        "ms/frame": None if s.per_frame_latency_s is None
+                                    else round(s.per_frame_latency_s * 1000, 2),
+                        "fps/GPU": None if s.fps_per_gpu is None else round(s.fps_per_gpu, 1),
+                        "required fps": None if s.required_fps is None else round(s.required_fps, 1),
+                        "GPU-seconds": None if s.gpu_seconds is None else round(s.gpu_seconds, 1),
+                        "served": s.feasible,
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                st.caption(
+                    f"required {top.required_gpu_seconds:.1f} GPU-s vs "
+                    f"{top.gpus_needed}×{w_deadline:.0f}s = "
+                    f"{top.gpus_needed*w_deadline:.0f}s capacity → "
+                    f"{top.headroom_frac*100:.1f}% headroom · bottleneck: "
+                    f"**{top.bottleneck_stream}**")
+
 # ---------- Models (custom uploads) -----------------------------------------
 with tab_models:
     st.subheader("Add your own model")
@@ -395,7 +565,7 @@ with tab_models:
         u_family = c2.text_input("family", value="custom")
         u_img = c3.number_input("ref img size (px)", min_value=32, max_value=2048,
                                 value=640, step=32)
-        u_submit = st.form_submit_button("Profile and add", type="primary",
+        u_submit = st.form_submit_button("profile and add", type="primary",
                                          use_container_width=True)
 
     if u_submit:
