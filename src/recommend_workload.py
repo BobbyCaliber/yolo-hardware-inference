@@ -336,6 +336,10 @@ def _print_table(df: pd.DataFrame, noun: str, deadline: float, within_budget: bo
     print(f"\n{head} {noun} that finish the workload within {deadline:.0f}s "
           f"(conservative ~84% latency band):\n")
     print(show.to_string(index=False))
+    if noun == "GPUs":
+        print("\nnote: --gpu-only ranks by GPU; price = cheapest DNS *carrier "
+              "build* containing that GPU (no standalone GPU price exists in the "
+              "catalogue), not the bare card.")
 
 
 def _print_breakdown(row: pd.Series, deadline: float) -> None:

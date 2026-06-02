@@ -499,6 +499,11 @@ with tab_workload:
                         "streams_summary": st.column_config.TextColumn(width="large"),
                     },
                 )
+                if w_gpu_only:
+                    st.caption(
+                        "**GPU-only:** ranked by GPU; `price` = cheapest DNS "
+                        "**carrier build** containing that GPU (no standalone GPU "
+                        "price exists in the catalogue), not the bare card.")
 
                 top = shown.iloc[0]["_result"]
                 st.markdown(f"**Per-stream breakdown — top pick "
